@@ -27,6 +27,9 @@ import sys
 import pandas as pd
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE_DIR)
+
+from core.engine import read_csv_kr   # 인코딩 자동 판별 로더 (CP949 실데이터 대응)
 
 # Worst 수요안: base 대비 증가율이 2026년 0%에서 2050년 +12%까지 선형 확대
 WORST_USAGE_MAX_UPLIFT = 0.12
@@ -51,8 +54,7 @@ def generate(src_dir, out_dir):
                     os.path.join(out_dir, "Hourly_Data.csv"))
 
     # 2) Annual_Usage.csv (base) + Annual_Usage_worst.csv
-    df_u = pd.read_csv(os.path.join(src_dir, "Annual_Usage.csv"), thousands=",")
-    df_u.columns = df_u.columns.str.strip()
+    df_u = read_csv_kr(os.path.join(src_dir, "Annual_Usage.csv"), thousands=",")
     df_u.to_csv(os.path.join(out_dir, "Annual_Usage.csv"), index=False, encoding="utf-8-sig")
 
     worst = df_u.copy()
@@ -66,8 +68,7 @@ def generate(src_dir, out_dir):
     worst.to_csv(os.path.join(out_dir, "Annual_Usage_worst.csv"), index=False, encoding="utf-8-sig")
 
     # 3) Annual_PPA.csv + 연도별 변동(V) 컬럼
-    df_p = pd.read_csv(os.path.join(src_dir, "Annual_PPA.csv"))
-    df_p.columns = df_p.columns.str.strip()
+    df_p = read_csv_kr(os.path.join(src_dir, "Annual_PPA.csv"), thousands=",")
     fracs_p = [y - int(df_p["Year"].min()) for y in df_p["Year"]]
     for v_col, m_col in VARIABLE_PPA_BASE.items():
         decline = VARIABLE_PPA_DECLINE[v_col]
@@ -76,8 +77,7 @@ def generate(src_dir, out_dir):
     df_p.to_csv(os.path.join(out_dir, "Annual_PPA.csv"), index=False, encoding="utf-8-sig")
 
     # 4) Annual_Rate.csv + SMP_H / SMP_L 배수 곡선
-    df_r = pd.read_csv(os.path.join(src_dir, "Annual_Rate.csv"))
-    df_r.columns = df_r.columns.str.strip()
+    df_r = read_csv_kr(os.path.join(src_dir, "Annual_Rate.csv"), thousands=",")
     fracs_r = _year_frac(df_r["Year"].tolist())
     smp_m = df_r["SMP_M"] if "SMP_M" in df_r.columns else pd.Series([1.0] * len(df_r))
     df_r["SMP_H"] = [round(float(m) * (1 + SMP_SPREAD_2050 * f), 4) for m, f in zip(smp_m, fracs_r)]

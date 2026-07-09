@@ -91,14 +91,18 @@
 
 ## 4. 실제(사내) 데이터로 바꾸기
 
-기본은 `data/sample/`의 **샘플 데이터**로 동작합니다. 실제 데이터로 바꾸려면:
+기본은 `data/sample/`의 **샘플 데이터**로 동작합니다. 실제 데이터로 바꾸는 방법 (권장 순):
 
-1. 실제 입력 CSV 4종을 한 폴더에 모읍니다. (형식은 [`docs/DATA_SPEC.md`](docs/DATA_SPEC.md) 참조)
-2. `대시보드_실행.bat`를 메모장으로 열어 아래 줄의 `REM`을 지우고 폴더 경로를 입력:
+1. **`data/real_data/` 폴더에 넣기 (권장)** — 실제 CSV 4종을 `data/real_data/`에 넣으면
+   환경변수 설정 없이 **자동 인식**합니다. (형식은 [`docs/DATA_SPEC.md`](docs/DATA_SPEC.md) 참조)
+2. 다른 폴더를 쓰려면 `대시보드_실행.bat`를 메모장으로 열어 아래 줄의 `REM`을 지우고 폴더 경로 입력:
    ```bat
    set "PPA_DATA_DIR=C:\사내\데이터폴더"
    ```
-3. 저장 후 `.bat` 더블클릭 → 실제 데이터로 동작합니다.
+   (환경변수가 `data/real_data`보다 우선)
+
+> **인코딩 자동 판별:** 엑셀에서 그냥 'CSV'로 저장한 파일(CP949)도, 'CSV UTF-8'(BOM 유무 무관)도
+> 그대로 로드됩니다. 컬럼명의 BOM·앞뒤 공백도 자동 정리됩니다.
 
 **입력 CSV 4종** (같은 폴더, 2026~2050년 모두 포함)
 
@@ -190,6 +194,7 @@ ppa-dashboard/
 ```bat
 python tools/smoke_test.py     REM 엔진 3종(check/site/greedy) 일괄 검증
 python tools/scenario_test.py  REM 기준정보 시나리오 분류 + 하위 호환 회귀 검증
+python tools/encoding_test.py  REM CP949/UTF-8 인코딩 자동 판별 + real_data 자동 인식 검증
 ```
 
 ---

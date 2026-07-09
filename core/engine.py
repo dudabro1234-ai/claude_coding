@@ -65,6 +65,31 @@ def get_ppa_reference_year(year, start_year):
     return start_year + ((year - start_year) // PPA_REF_PERIOD) * PPA_REF_PERIOD
 
 
+# CSV 인코딩 자동 판별 순서 — 사내 실데이터는 엑셀 저장본(CP949)인 경우가 많다.
+CSV_ENCODINGS = ("utf-8-sig", "cp949", "utf-8", "euc-kr")
+
+
+def read_csv_kr(path, **kwargs):
+    """한글 CSV 안전 로더 — UTF-8(BOM 포함)과 엑셀 저장본(CP949/EUC-KR)을 자동 판별.
+
+    컬럼명의 BOM·앞뒤 공백도 함께 정리하므로, 어떤 방식으로 저장한 파일이든
+    같은 컬럼명 규칙(DATA_SPEC.md)으로 매칭된다.
+    """
+    last_err = None
+    for enc in CSV_ENCODINGS:
+        try:
+            df = pd.read_csv(path, encoding=enc, **kwargs)
+        except (UnicodeDecodeError, UnicodeError) as e:
+            last_err = e
+            continue
+        df.columns = [str(c).replace("﻿", "").strip() for c in df.columns]
+        return df
+    raise UnicodeError(
+        f"'{os.path.basename(path)}' 파일의 문자 인코딩을 인식할 수 없습니다 "
+        f"(시도한 인코딩: {', '.join(CSV_ENCODINGS)}). "
+        f"엑셀에서 'CSV UTF-8(쉼표로 분리)' 형식으로 다시 저장한 뒤 시도해 보세요. 원인: {last_err}")
+
+
 # ════════════════════════════════════════════════════════════════════
 # 2. 데이터 로드
 # ════════════════════════════════════════════════════════════════════
@@ -143,14 +168,12 @@ def load_data(data_dir):
     def _p(name):
         return os.path.join(data_dir, name)
 
-    df_hourly = pd.read_csv(_p("Hourly_Data.csv"))
-    df_usage = pd.read_csv(_p("Annual_Usage.csv"), thousands=",")
-    df_ppa = pd.read_csv(_p("Annual_PPA.csv"))
-    df_rate = pd.read_csv(_p("Annual_Rate.csv"))
-
-    # 연간 파일은 컬럼명 앞뒤 공백 제거 (원본 동작)
-    for d in (df_usage, df_ppa, df_rate):
-        d.columns = d.columns.str.strip()
+    # 인코딩 자동 판별 로더 사용 — UTF-8 파일도, 엑셀 저장본(CP949)도 그대로 로드된다.
+    # (컬럼명 BOM·공백 정리는 read_csv_kr 안에서 일괄 처리)
+    df_hourly = read_csv_kr(_p("Hourly_Data.csv"))
+    df_usage = read_csv_kr(_p("Annual_Usage.csv"), thousands=",")
+    df_ppa = read_csv_kr(_p("Annual_PPA.csv"), thousands=",")
+    df_rate = read_csv_kr(_p("Annual_Rate.csv"), thousands=",")
 
     smp_col = find_col(df_hourly, "SMP")
     factor_adj_col = find_col(df_hourly, "Factor_ADJ")
@@ -165,9 +188,7 @@ def load_data(data_dir):
             continue
         path = _p(f"Annual_Usage_{code}.csv")
         if os.path.exists(path):
-            df_sc = pd.read_csv(path, thousands=",")
-            df_sc.columns = df_sc.columns.str.strip()
-            usage_scenarios[code] = _usage_rows(df_sc)
+            usage_scenarios[code] = _usage_rows(read_csv_kr(path, thousands=","))
 
     # ── PPA 단가 시나리오: 접미사 컬럼 (발전원별로 없으면 기본 *_M 폴백) ──
     ppa_scenarios = {}
