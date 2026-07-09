@@ -83,6 +83,10 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 .re-radio label:hover { border-color: var(--border-strong); }
 .re-radio label.selected { background: var(--accent-bg); border-color: var(--accent); color: var(--accent-strong); font-weight: 700; }
 .re-radio input { accent-color: var(--accent); }
+.scn-sel-label { font-family: var(--mono); font-size: 10.5px; color: var(--text-dim); margin: 6px 0 3px; }
+.scn-select { width: 100%; padding: 7px 9px; border: 1px solid var(--border); background: var(--surface-soft); border-radius: 8px; font-size: 12.5px; color: var(--text); outline: none; cursor: pointer; }
+.scn-select:hover, .scn-select:focus { border-color: var(--accent); }
+.scn-select:disabled { color: var(--text-dim); cursor: default; }
 .action-btn { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 9px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--surface); font-size: 12.5px; font-weight: 600; color: var(--text-soft); cursor: pointer; margin-bottom: 6px; font-family: var(--sans); }
 .action-btn:hover { border-color: var(--accent); color: var(--accent-strong); background: var(--accent-bg); }
 .action-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
@@ -228,6 +232,9 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
     <div class="p-sec">RE 목표</div>
     <div class="re-radio" id="goalGroup"></div>
 
+    <div class="p-sec">기준정보 시나리오</div>
+    <div id="scnAxes"></div>
+
     <div class="p-sec">옵션</div>
     <div class="opt-row" data-key="secStop"><span class="lb">SEC 가동 중단<span class="hint">2043년~ · 결과 즉시 반영</span></span><span class="switch"></span></div>
     <div class="opt-row" data-key="smr"><span class="lb">SMR 포함<span class="hint">자동 최적화에 반영</span></span><span class="switch"></span></div>
@@ -281,7 +288,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 
     <div class="card" id="compareCard" style="display:none;">
       <div class="card-head"><div class="card-title">시나리오 비교</div><div class="card-sub">저장한 스냅샷 간 비교</div></div>
-      <div style="overflow-x:auto;"><table class="data-table" id="compareTable"><thead><tr><th>이름</th><th>RE 목표</th><th>옵션</th><th>총비용(조원)</th><th>RE(2050)</th><th>EAC평균</th><th></th></tr></thead><tbody></tbody></table></div>
+      <div style="overflow-x:auto;"><table class="data-table" id="compareTable"><thead><tr><th>이름</th><th>RE 목표</th><th>기준정보</th><th>옵션</th><th>총비용(조원)</th><th>RE(2050)</th><th>EAC평균</th><th></th></tr></thead><tbody></tbody></table></div>
+    </div>
+
+    <div class="card" id="matrixCard">
+      <div class="card-head">
+        <div class="card-title">시나리오 매트릭스 <span class="card-sub" id="matrixSub">기준정보 조합(사용량 × PPA단가 × SMP) 일괄 비교 · 현재 RE목표/옵션 기준</span></div>
+        <button class="mini-btn" id="matrixBtn" onclick="runMatrix()">일괄 계산</button>
+      </div>
+      <div id="matrixResult" class="placeholder">‘일괄 계산’을 누르면 데이터에 존재하는 모든 기준정보 시나리오 조합의 KPI를 한 번에 비교합니다. (시나리오 데이터가 없으면 기본안 1개만 표시)</div>
     </div>
 
     <div class="insight-card">
@@ -363,13 +378,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 
 <script>
 const COLORS = { 태양광:'#f59e0b', 균등태양광:'#fcd34d', 육상풍력:'#3b82f6', 해상풍력:'#1e40af', 수력:'#06b6d4', SMR:'#8b5cf6' };
-const STATE = { goal:'RE33_SEC', smr:false, flatPv:true, flatWt:false, secStop:false };
+const STATE = { goal:'RE33_SEC', smr:false, flatPv:true, flatWt:false, secStop:false,
+                usageScn:'base', ppaScn:'fixed', smpScn:'M' };
 let META = null, lastRun = null, runSeq = 0, greedyPortfolio = null;
 const charts = {};
 const SNAPSHOTS = [];
 
 function buildParams() {
-  return { re_goal_column: STATE.goal, smr_mode: STATE.smr, flat_pv_mode: STATE.flatPv, flat_wt_mode: STATE.flatWt, sec_stop: STATE.secStop };
+  return { re_goal_column: STATE.goal, smr_mode: STATE.smr, flat_pv_mode: STATE.flatPv, flat_wt_mode: STATE.flatWt, sec_stop: STATE.secStop,
+           usage_scenario: STATE.usageScn, ppa_scenario: STATE.ppaScn, smp_scenario: STATE.smpScn };
 }
 async function postJSON(url, body) {
   const r = await fetch(url, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body) });
@@ -392,6 +409,7 @@ async function init() {
     META = await getJSON('api/meta');
     document.getElementById('dataDirLabel').textContent = META.data_dir || '';
     buildGoalRadios();
+    buildScenarioSelectors();
     refreshLlmBadge(META.llm);
     initChat();
     loadInputs();          // 데이터 페이지 (비동기, 블로킹 안 함)
@@ -420,6 +438,41 @@ function buildGoalRadios() {
   }));
 }
 
+/* ═══ 기준정보 시나리오 드롭다운 (데이터에 존재하는 시나리오만) ═══ */
+const SCN_AXES = [
+  { axis:'usage', key:'usageScn', name:'사업장 사용량' },
+  { axis:'ppa',   key:'ppaScn',   name:'PPA 단가' },
+  { axis:'smp',   key:'smpScn',   name:'SMP' },
+];
+function scnOptions(axis) { return (META && META.scenarios && META.scenarios[axis]) || []; }
+function scnLabelOf(axis, code) { const o = scnOptions(axis).find(x => x.code === code); return o ? o.label : code; }
+function buildScenarioSelectors() {
+  const box = document.getElementById('scnAxes');
+  box.innerHTML = SCN_AXES.map(a => {
+    const opts = scnOptions(a.axis);
+    const cur = opts.some(o => o.code === STATE[a.key]) ? STATE[a.key] : (META.scenario_defaults||{})[a.axis];
+    STATE[a.key] = cur;
+    const single = opts.length <= 1;
+    return `<div class="scn-sel-label">${a.name}${single ? ' <span title="시나리오 데이터를 추가하면 선택지가 늘어납니다">(단일)</span>' : ''}</div>
+      <select class="scn-select" data-scn="${a.key}" ${single?'disabled':''}>
+        ${opts.map(o => `<option value="${o.code}" ${o.code===cur?'selected':''}>${escapeHtml(o.label)}</option>`).join('')}
+      </select>`;
+  }).join('');
+  box.querySelectorAll('select[data-scn]').forEach(sel => sel.addEventListener('change', e => {
+    STATE[e.target.dataset.scn] = e.target.value;
+    runEngine();
+  }));
+}
+function scnTags(p) {
+  // 기본값이 아닌 시나리오만 짧은 태그로 (라벨·비교표용)
+  const t = [];
+  const d = (META && META.scenario_defaults) || { usage:'base', ppa:'fixed', smp:'M' };
+  if (p.usage_scenario && p.usage_scenario !== d.usage) t.push('수요:' + scnLabelOf('usage', p.usage_scenario));
+  if (p.ppa_scenario && p.ppa_scenario !== d.ppa) t.push('PPA:' + scnLabelOf('ppa', p.ppa_scenario));
+  if (p.smp_scenario && p.smp_scenario !== d.smp) t.push('SMP:' + scnLabelOf('smp', p.smp_scenario));
+  return t;
+}
+
 /* 옵션 토글 */
 document.querySelectorAll('.opt-row').forEach(row => row.addEventListener('click', () => {
   const sw = row.querySelector('.switch'); const key = row.dataset.key;
@@ -443,6 +496,7 @@ document.querySelectorAll('.top-tab').forEach(t => t.addEventListener('click', (
 /* ═══ 엔진 실행 (run_check — 조건 변경 시 자동) ═══ */
 function scenarioLabel() {
   const b = [STATE.goal];
+  b.push(...scnTags(buildParams()));
   if (STATE.smr) b.push('SMR'); if (STATE.secStop) b.push('SEC중단');
   if (!STATE.flatPv) b.push('균등PV✕'); if (STATE.flatWt) b.push('균등WT');
   return b.join(' · ');
@@ -570,6 +624,48 @@ async function runGreedy() {
   } finally { btn.disabled = false; btn.innerHTML = '⚡ 자동 최적화 <span class="sub">(수십 초~수 분)</span>'; }
 }
 
+/* ═══ 시나리오 매트릭스 (기준정보 조합 일괄 계산) ═══ */
+let MATRIX_CASES = [];
+async function runMatrix() {
+  const btn = document.getElementById('matrixBtn');
+  const box = document.getElementById('matrixResult');
+  btn.disabled = true;
+  box.innerHTML = '<span class="spinner"></span> 기준정보 시나리오 조합을 일괄 계산 중…';
+  try {
+    const d = await postJSON('api/matrix', buildParams());
+    MATRIX_CASES = d.cases || [];
+    document.getElementById('matrixSub').textContent =
+      `${d.count}개 조합 · 현재 RE목표(${STATE.goal})/옵션 기준`;
+    if (!MATRIX_CASES.length) { box.innerHTML = '계산할 조합이 없습니다.'; return; }
+    const rows = MATRIX_CASES.map((c, i) => {
+      const t = c.kpi.total25y_trillion;
+      const tag = t === d.min_total ? ' <span style="color:var(--good);font-weight:700;">▼ 최소</span>'
+                : t === d.max_total ? ' <span style="color:var(--bad);font-weight:700;">▲ 최대</span>' : '';
+      const active = c.usage===STATE.usageScn && c.ppa===STATE.ppaScn && c.smp===STATE.smpScn;
+      return `<tr${active?' style="background:var(--accent-bg);"':''}>
+        <td>${escapeHtml(scnLabelOf('usage', c.usage))}</td>
+        <td>${escapeHtml(scnLabelOf('ppa', c.ppa))}</td>
+        <td>${escapeHtml(scnLabelOf('smp', c.smp))}</td>
+        <td class="mono"><b>${t.toFixed(2)}</b>${tag}</td>
+        <td class="mono">${Math.round(c.kpi.re_2050)}%</td>
+        <td class="mono">${Math.round(c.kpi.eac_avg)}%</td>
+        <td><button class="mini-btn" onclick="applyMatrixCase(${i})">${active?'현재':'적용'}</button></td></tr>`;
+    }).join('');
+    box.classList.remove('placeholder');
+    box.innerHTML = `<div style="overflow-x:auto;"><table class="data-table">
+      <thead><tr><th>사용량</th><th>PPA 단가</th><th>SMP</th><th>총비용(조원)</th><th>RE(2050)</th><th>EAC평균</th><th></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:7px;">최소–최대 격차: <b>${(d.max_total - d.min_total).toFixed(2)}조원</b> · 시나리오 데이터(worst 사용량, *_V 단가, SMP_H/L)를 추가하면 조합이 늘어납니다.</div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="signal error" style="margin:0;"><b>⚠</b><div>매트릭스 계산 실패: ${escapeHtml(e.message)}</div></div>`;
+  } finally { btn.disabled = false; }
+}
+function applyMatrixCase(i) {
+  const c = MATRIX_CASES[i]; if (!c) return;
+  STATE.usageScn = c.usage; STATE.ppaScn = c.ppa; STATE.smpScn = c.smp;
+  buildScenarioSelectors(); runEngine();
+}
+
 /* ═══ CSV 내보내기 ═══ */
 async function downloadCSV(kind) {
   try {
@@ -595,7 +691,10 @@ function loadSnapshot(i) {
   const sn = SNAPSHOTS[i]; if (!sn) return;
   STATE.goal = sn.params.re_goal_column; STATE.smr = sn.params.smr_mode;
   STATE.flatPv = sn.params.flat_pv_mode; STATE.flatWt = sn.params.flat_wt_mode; STATE.secStop = sn.params.sec_stop;
-  syncControls(); runEngine();
+  if (sn.params.usage_scenario) STATE.usageScn = sn.params.usage_scenario;
+  if (sn.params.ppa_scenario) STATE.ppaScn = sn.params.ppa_scenario;
+  if (sn.params.smp_scenario) STATE.smpScn = sn.params.smp_scenario;
+  buildScenarioSelectors(); syncControls(); runEngine();
 }
 function delSnapshot(i) { SNAPSHOTS.splice(i, 1); renderSnapshots(); }
 function renderSnapshots() {
@@ -604,8 +703,9 @@ function renderSnapshots() {
   const card = document.getElementById('compareCard');
   card.style.display = SNAPSHOTS.length ? '' : 'none';
   const optStr = p => [p.smr_mode&&'SMR', p.sec_stop&&'SEC중단', p.flat_pv_mode&&'균등PV', p.flat_wt_mode&&'균등WT'].filter(Boolean).join(', ') || '—';
+  const scnStr = p => { const t = scnTags(p); return t.length ? t.join(', ') : '기본'; };
   document.querySelector('#compareTable tbody').innerHTML = SNAPSHOTS.map((s, i) =>
-    `<tr><td><b>${escapeHtml(s.name)}</b></td><td class="mono">${s.params.re_goal_column}</td><td>${optStr(s.params)}</td><td class="mono"><b>${s.kpi.total25y_trillion}</b></td><td class="mono">${Math.round(s.kpi.re_2050)}%</td><td class="mono">${Math.round(s.kpi.eac_avg)}%</td><td><button class="mini-btn" onclick="loadSnapshot(${i})">불러오기</button></td></tr>`).join('');
+    `<tr><td><b>${escapeHtml(s.name)}</b></td><td class="mono">${s.params.re_goal_column}</td><td>${escapeHtml(scnStr(s.params))}</td><td>${optStr(s.params)}</td><td class="mono"><b>${s.kpi.total25y_trillion}</b></td><td class="mono">${Math.round(s.kpi.re_2050)}%</td><td class="mono">${Math.round(s.kpi.eac_avg)}%</td><td><button class="mini-btn" onclick="loadSnapshot(${i})">불러오기</button></td></tr>`).join('');
 }
 
 /* ═══ 데이터 페이지 (실데이터) ═══ */
@@ -690,7 +790,10 @@ function applyParams(np){
   if ('flat_pv_mode' in np) STATE.flatPv = np.flat_pv_mode;
   if ('flat_wt_mode' in np) STATE.flatWt = np.flat_wt_mode;
   if ('sec_stop' in np) STATE.secStop = np.sec_stop;
-  syncControls(); runEngine();
+  if ('usage_scenario' in np) STATE.usageScn = np.usage_scenario;
+  if ('ppa_scenario' in np) STATE.ppaScn = np.ppa_scenario;
+  if ('smp_scenario' in np) STATE.smpScn = np.smp_scenario;
+  buildScenarioSelectors(); syncControls(); runEngine();
 }
 
 /* ═══ LLM 설정 ═══ */

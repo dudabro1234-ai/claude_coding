@@ -34,6 +34,7 @@ except Exception:
 from core.config import (
     YEARS, SOURCES, SITES, SITE_CODES, DEFAULT_FIXED_PPAS,
     COMPANY_USAGE_COL, SimulationParams, ppa_price_col,
+    DEFAULT_USAGE_SCENARIO, DEFAULT_PPA_SCENARIO, DEFAULT_SMP_SCENARIO,
 )
 from core.engine import (
     load_data, run_check, run_site, run_greedy, find_col, company_total_cost,
@@ -46,6 +47,7 @@ DATA_DIR = os.environ.get("PPA_DATA_DIR") or os.path.join(BASE_DIR, "data", "sam
 ENGINE_PARAM_KEYS = {
     "re_goal_column", "sec_stop", "smr_mode",
     "flat_pv_mode", "flat_wt_mode", "reset_portfolio_annually",
+    "usage_scenario", "ppa_scenario", "smp_scenario",
 }
 
 
@@ -117,6 +119,13 @@ def api_meta():
         "sources": SOURCES,
         "sites": [{"code": c, "name": SITES[c].name} for c in SITE_CODES],
         "re_goal_columns": re_cols,
+        # 기준정보 시나리오 — 데이터에 실제 존재하는 것만 노출 (없으면 기본만)
+        "scenarios": bundle.scenario_options(),
+        "scenario_defaults": {
+            "usage": DEFAULT_USAGE_SCENARIO,
+            "ppa": DEFAULT_PPA_SCENARIO,
+            "smp": DEFAULT_SMP_SCENARIO,
+        },
         "default_fixed_ppas": DEFAULT_FIXED_PPAS,
         "data_dir": DATA_DIR,
         "llm": "사내 LLM" if agent.llm_available() else "Mock",
@@ -234,6 +243,33 @@ def _compute_run_uncached(payload):
     }
 
 
+def api_matrix(payload):
+    """시나리오 매트릭스 — 데이터에 존재하는 모든 (사용량 × PPA단가 × SMP) 조합을
+    일괄 계산해 KPI를 비교한다. 현재 화면의 RE목표/옵션은 그대로 적용."""
+    bundle = get_bundle(DATA_DIR)
+    opts = bundle.scenario_options()
+    cases = []
+    for u in opts["usage"]:
+        for p in opts["ppa"]:
+            for s in opts["smp"]:
+                pl = {**(payload or {}),
+                      "usage_scenario": u["code"], "ppa_scenario": p["code"], "smp_scenario": s["code"]}
+                r = compute_run(pl)
+                cases.append({
+                    "usage": u["code"], "ppa": p["code"], "smp": s["code"],
+                    "label": f'{u["label"]} / {p["label"]} / SMP {s["label"]}',
+                    "kpi": r["kpi"],
+                })
+    totals = [c["kpi"]["total25y_trillion"] for c in cases]
+    return {
+        "axes": opts,
+        "cases": cases,
+        "count": len(cases),
+        "min_total": min(totals) if totals else None,
+        "max_total": max(totals) if totals else None,
+    }
+
+
 def api_site(payload):
     """run_site(수십초) → IC/CJ/YI 2050년 배분."""
     bundle = get_bundle(DATA_DIR)
@@ -332,6 +368,7 @@ ROUTES = {
     "/api/meta": lambda p: api_meta(),
     "/api/inputs": lambda p: api_inputs(),
     "/api/run": api_run,
+    "/api/matrix": api_matrix,
     "/api/site": api_site,
     "/api/greedy": api_greedy,
     "/api/export": api_export,

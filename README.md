@@ -111,6 +111,21 @@
 
 > 샘플 데이터를 다시 만들려면: `python tools/generate_sample_data.py`
 
+### 기준정보 시나리오 (선택)
+
+기준정보를 시나리오로 분류해 **최대 2(사용량 base/worst) × 2(PPA단가 고정/변동) × 3(SMP 기본/고가/저가) = 12개 case**를
+비교할 수 있습니다. 방법은 데이터 폴더에 다음을 **추가**하는 것뿐입니다 (기존 4종은 그대로):
+
+- `Annual_Usage_worst.csv` — Worst 수요안 (기존 사용량 파일과 같은 컬럼 구조)
+- `Annual_PPA.csv`에 `PV_V`, `On_W_V` 등 **연도별 변동 단가 컬럼**
+- `Annual_Rate.csv`에 `SMP_H` / `SMP_L` **배수 컬럼**
+
+추가된 시나리오는 대시보드 좌측 "기준정보 시나리오" 드롭다운과 **시나리오 매트릭스**(전 조합 일괄 비교)에
+자동으로 나타납니다. 자세한 규칙은 [`docs/DATA_SPEC.md`](docs/DATA_SPEC.md) 4-1절 참조.
+
+> 12개 조합이 채워진 데모 폴더 생성: `python tools/generate_scenario_data.py`
+> → `PPA_DATA_DIR=data/sample_scenario` 로 실행
+
 ---
 
 ## 5. AI 도우미(사내 LLM) 연결
@@ -174,6 +189,7 @@ ppa-dashboard/
 
 ```bat
 python tools/smoke_test.py     REM 엔진 3종(check/site/greedy) 일괄 검증
+python tools/scenario_test.py  REM 기준정보 시나리오 분류 + 하위 호환 회귀 검증
 ```
 
 ---

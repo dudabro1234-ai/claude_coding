@@ -26,7 +26,9 @@ from .config import (
     YEARS, SOURCES, GENERATION_COL_MAP, UTILIZATION_MAP, FLAT_SOURCES,
     SITES, SITE_CODES, COMPANY_USAGE_COL, GRID_USAGE_CHARGE,
     EFF_DECAY, PPA_REF_PERIOD, STEP_MW, MIN_PARTIAL_STEP, EPS,
-    NEW_ENTRY_CAP, CAP_GRIDS, EAC_MIN_RATIO,
+    NEW_ENTRY_CAP, CAP_GRIDS, EAC_MIN_RATIO, ABBRS,
+    USAGE_SCENARIOS, PPA_PRICE_SCENARIOS, SMP_SCENARIOS,
+    DEFAULT_USAGE_SCENARIO, DEFAULT_PPA_SCENARIO, DEFAULT_SMP_SCENARIO,
     ppa_price_col, rate_col, SimulationParams, Site,
 )
 
@@ -69,16 +71,75 @@ def get_ppa_reference_year(year, start_year):
 
 @dataclass
 class DataBundle:
-    hourly: dict          # {year: DataFrame}
-    usage: dict           # {year: Series}
-    rate: dict            # {year: Series}
-    price_dicts: dict     # {source: {ref_year: price}}
+    hourly: dict            # {year: DataFrame}
+    usage_scenarios: dict   # {usage_scenario: {year: Series}}
+    rate: dict              # {year: Series}
+    ppa_scenarios: dict     # {ppa_scenario: {source: {ref_year: price}}}
+    smp_rate_cols: dict     # {smp_scenario: Annual_Rate.csv 배수 컬럼명}
     smp_col: str
     factor_adj_col: str
 
+    # ── 기본 시나리오 별칭 (기존 코드 호환) ──
+    @property
+    def usage(self):
+        return self.usage_scenarios[DEFAULT_USAGE_SCENARIO]
+
+    @property
+    def price_dicts(self):
+        return self.ppa_scenarios[DEFAULT_PPA_SCENARIO]
+
+    # ── params 의 시나리오 선택 해석 (없는 시나리오는 명확한 오류) ──
+    def usage_for(self, params):
+        key = getattr(params, "usage_scenario", DEFAULT_USAGE_SCENARIO) or DEFAULT_USAGE_SCENARIO
+        if key not in self.usage_scenarios:
+            raise ValueError(
+                f"사용량 시나리오 '{key}' 데이터가 없습니다. "
+                f"(가능: {sorted(self.usage_scenarios)} — Annual_Usage_{key}.csv 를 데이터 폴더에 추가하세요)")
+        return self.usage_scenarios[key]
+
+    def prices_for(self, params):
+        key = getattr(params, "ppa_scenario", DEFAULT_PPA_SCENARIO) or DEFAULT_PPA_SCENARIO
+        if key not in self.ppa_scenarios:
+            suffix = PPA_PRICE_SCENARIOS.get(key, {}).get("suffix", "?")
+            raise ValueError(
+                f"PPA 단가 시나리오 '{key}' 데이터가 없습니다. "
+                f"(가능: {sorted(self.ppa_scenarios)} — Annual_PPA.csv 에 *_{suffix} 컬럼을 추가하세요)")
+        return self.ppa_scenarios[key]
+
+    def smp_rate_col_for(self, params):
+        """선택한 SMP 시나리오의 Annual_Rate.csv 배수 컬럼명. (기본 M은 컬럼이 없어도 허용 → 배수 1)"""
+        key = getattr(params, "smp_scenario", DEFAULT_SMP_SCENARIO) or DEFAULT_SMP_SCENARIO
+        if key not in self.smp_rate_cols:
+            raise ValueError(
+                f"SMP 시나리오 '{key}' 데이터가 없습니다. "
+                f"(가능: {sorted(self.smp_rate_cols)} — Annual_Rate.csv 에 SMP_{key} 컬럼을 추가하세요)")
+        return self.smp_rate_cols[key]
+
+    def scenario_options(self):
+        """데이터에 실제 존재하는 시나리오 목록 (대시보드 노출용)."""
+        return {
+            "usage": [{"code": c, "label": USAGE_SCENARIOS.get(c, c)}
+                      for c in USAGE_SCENARIOS if c in self.usage_scenarios],
+            "ppa": [{"code": c, "label": PPA_PRICE_SCENARIOS[c]["label"]}
+                    for c in PPA_PRICE_SCENARIOS if c in self.ppa_scenarios],
+            "smp": [{"code": c, "label": SMP_SCENARIOS.get(c, c)}
+                    for c in SMP_SCENARIOS if c in self.smp_rate_cols],
+        }
+
+
+def _usage_rows(df):
+    return {int(r["Year"]): r for _, r in df.iterrows()}
+
 
 def load_data(data_dir):
-    """4종 CSV를 읽어 DataBundle로 반환. (DATA_SPEC.md 형식 가정)"""
+    """4종 CSV(+선택적 시나리오 데이터)를 읽어 DataBundle로 반환. (DATA_SPEC.md 형식 가정)
+
+    시나리오 확장 규칙 — 모두 '있으면 로드, 없으면 생략(기본만)':
+      · 사용량   : Annual_Usage_{시나리오}.csv (예: Annual_Usage_worst.csv)
+      · PPA 단가 : Annual_PPA.csv 의 접미사 컬럼 (예: PV_V) — 없는 발전원은 *_M 폴백
+      · SMP      : Annual_Rate.csv 의 SMP_H / SMP_L 배수 컬럼
+    기존 4종 CSV만 있는 폴더는 이전 버전과 완전히 동일하게 동작한다.
+    """
     def _p(name):
         return os.path.join(data_dir, name)
 
@@ -95,15 +156,44 @@ def load_data(data_dir):
     factor_adj_col = find_col(df_hourly, "Factor_ADJ")
 
     hourly = {int(y): sub.reset_index(drop=True) for y, sub in df_hourly.groupby("Year")}
-    usage = {int(r["Year"]): r for _, r in df_usage.iterrows()}
     rate = {int(r["Year"]): r for _, r in df_rate.iterrows()}
 
-    price_dicts = {}
-    for src in SOURCES:
-        col = find_col(df_ppa, ppa_price_col(src))
-        price_dicts[src] = dict(zip(df_ppa["Year"], df_ppa[col]))
+    # ── 사용량 시나리오: base = Annual_Usage.csv, 그 외 = Annual_Usage_{코드}.csv ──
+    usage_scenarios = {DEFAULT_USAGE_SCENARIO: _usage_rows(df_usage)}
+    for code in USAGE_SCENARIOS:
+        if code == DEFAULT_USAGE_SCENARIO:
+            continue
+        path = _p(f"Annual_Usage_{code}.csv")
+        if os.path.exists(path):
+            df_sc = pd.read_csv(path, thousands=",")
+            df_sc.columns = df_sc.columns.str.strip()
+            usage_scenarios[code] = _usage_rows(df_sc)
 
-    return DataBundle(hourly, usage, rate, price_dicts, smp_col, factor_adj_col)
+    # ── PPA 단가 시나리오: 접미사 컬럼 (발전원별로 없으면 기본 *_M 폴백) ──
+    ppa_scenarios = {}
+    for code, spec in PPA_PRICE_SCENARIOS.items():
+        prices, found_own = {}, False
+        for src in SOURCES:
+            col = find_col(df_ppa, f"{ABBRS[src]}_{spec['suffix']}", required=False)
+            if col is not None and code != DEFAULT_PPA_SCENARIO:
+                found_own = True
+            if col is None:
+                col = find_col(df_ppa, ppa_price_col(src))   # 기본(fixed, *_M) 폴백
+            prices[src] = dict(zip(df_ppa["Year"], df_ppa[col]))
+        if code == DEFAULT_PPA_SCENARIO or found_own:
+            ppa_scenarios[code] = prices
+
+    # ── SMP 시나리오: Annual_Rate.csv 의 SMP_{코드} 배수 컬럼 ──
+    smp_rate_cols = {}
+    for code in SMP_SCENARIOS:
+        col = find_col(df_rate, f"SMP_{code}", required=False)
+        if col is not None:
+            smp_rate_cols[code] = col
+    # 기본안(M)은 컬럼이 없어도 항상 선택 가능 (원본과 동일하게 배수 1 처리)
+    smp_rate_cols.setdefault(DEFAULT_SMP_SCENARIO, rate_col("SMP"))
+
+    return DataBundle(hourly, usage_scenarios, rate, ppa_scenarios,
+                      smp_rate_cols, smp_col, factor_adj_col)
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -182,6 +272,18 @@ def compute_generation(df_h, portfolio, year, price_dicts, mode):
 # 4. 비용 집계 — 전사 모델 (Check / Greedy)
 # ════════════════════════════════════════════════════════════════════
 
+def _smp_multiplier(rate_row, params):
+    """선택된 SMP 시나리오(M/H/L)의 해당 연도 배수.
+    기본안(M)은 컬럼이 없어도 1로 처리(원본 동작 보존), 그 외 시나리오는 컬럼 필수."""
+    key = getattr(params, "smp_scenario", DEFAULT_SMP_SCENARIO) or DEFAULT_SMP_SCENARIO
+    col = find_col(rate_row, f"SMP_{key}", required=False)
+    if col is not None:
+        return rate_row[col]
+    if key == DEFAULT_SMP_SCENARIO:
+        return 1
+    raise KeyError(f"Annual_Rate.csv 에 SMP_{key} 컬럼이 없습니다. (가능 시나리오: {list(SMP_SCENARIOS)})")
+
+
 def cost_company(df_h, g, year, usage_row, rate_row, params, smp_col, factor_adj_col):
     """전사(SKH) 단일 비용 모델. 결과 단위: 백만원. (원본 Check/Greedy 보존)"""
     n = len(df_h)
@@ -189,7 +291,7 @@ def cost_company(df_h, g, year, usage_row, rate_row, params, smp_col, factor_adj
     FC = rate_row[rate_col("FC")]
     BC = rate_row[rate_col("BC")]
     EAC = rate_row[rate_col("EAC")]
-    smp_base = rate_row.get(rate_col("SMP"), 1)
+    smp_base = _smp_multiplier(rate_row, params)
 
     annual_usage = float(usage_row[COMPANY_USAGE_COL])
     peak = float(usage_row[f"{COMPANY_USAGE_COL}_Peak"])
@@ -270,7 +372,7 @@ def cost_site(df_h, g, year, site: Site, usage_row, rate_row, params, smp_col):
         direct_won = np.nan_to_num(g.ppa_cost_won * min_gu / gen)
     direct_ppa_cost = direct_won.sum() / 1e6
 
-    smp_won_kwh = df_h[smp_col].to_numpy() * rate_row.get(rate_col("SMP"), 1)
+    smp_won_kwh = df_h[smp_col].to_numpy() * _smp_multiplier(rate_row, params)
     # 원본 Site는 균등발전원 구분 없이 전체 초과발전에 SMP 차감
     smp_deduction_won = float((surplus * 1000.0 * smp_won_kwh).sum())
     vppa_cost = ((g.ppa_cost_won - direct_won).sum() - smp_deduction_won) / 1e6
@@ -320,8 +422,8 @@ def cost_site(df_h, g, year, site: Site, usage_row, rate_row, params, smp_col):
 
 def _company_year(bundle, params, portfolio, year):
     df_h = bundle.hourly[year]
-    g = compute_generation(df_h, portfolio, year, bundle.price_dicts, "company")
-    return g, cost_company(df_h, g, year, bundle.usage[year], bundle.rate[year],
+    g = compute_generation(df_h, portfolio, year, bundle.prices_for(params), "company")
+    return g, cost_company(df_h, g, year, bundle.usage_for(params)[year], bundle.rate[year],
                            params, bundle.smp_col, bundle.factor_adj_col)
 
 
@@ -346,12 +448,14 @@ def run_check(bundle, params):
     반환: {'cost': DataFrame, 're': DataFrame}
     """
     portfolio = params.fixed_ppas
+    usage_map = bundle.usage_for(params)
+    prices = bundle.prices_for(params)
     cost_rows, re_rows = [], []
 
     for year in YEARS:
         df_h = bundle.hourly[year]
-        usage_row = bundle.usage[year]
-        g = compute_generation(df_h, portfolio, year, bundle.price_dicts, "company")
+        usage_row = usage_map[year]
+        g = compute_generation(df_h, portfolio, year, prices, "company")
         c = cost_company(df_h, g, year, usage_row, bundle.rate[year],
                          params, bundle.smp_col, bundle.factor_adj_col)
         cost_rows.append(c)
@@ -516,8 +620,8 @@ def run_greedy(bundle, params, progress=None):
 
 def _site_year(bundle, params, site_code, year, portfolio):
     df_h = bundle.hourly[year]
-    g = compute_generation(df_h, portfolio, year, bundle.price_dicts, "site")
-    return cost_site(df_h, g, year, SITES[site_code], bundle.usage[year],
+    g = compute_generation(df_h, portfolio, year, bundle.prices_for(params), "site")
+    return cost_site(df_h, g, year, SITES[site_code], bundle.usage_for(params)[year],
                      bundle.rate[year], params, bundle.smp_col)
 
 
@@ -576,7 +680,8 @@ def run_site(bundle, params, progress=None):
                 cost1, _, _, _, _ = _company_cost_across_sites(bundle, params, trial, year)
                 savings[s] = cost0 - cost1
                 # 수요 여유(미포화도) = 사업장 연간 사용량 − 현재 배분된 RE 발전량
-                site_usage = float(bundle.usage[year][find_col(bundle.usage[year], s)])
+                usage_row_s = bundle.usage_for(params)[year]
+                site_usage = float(usage_row_s[find_col(usage_row_s, s)])
                 headroom[s] = site_usage - res0[s]["site_re_gen_total"]
             # [FIX] 절감액이 사실상 동률(상대오차 1e-9 이내)이면 수요 여유가 큰 사업장 우선.
             #        기존에는 strict 비교로 항상 첫 사업장이 동률을 독식 → 특정 사업장 배분 0 발생.

@@ -71,6 +71,29 @@ GRID_USAGE_CHARGE = 1335.03   # 망 이용요금 단가 (원/kW)
 RATE_SCENARIO = "M"
 PPA_SCENARIO = "M"
 
+
+### 4-1. 기준정보 시나리오 축 정의 ###
+# 세 축 모두 "데이터가 있으면 선택 가능, 없으면 기본값으로 폴백" 원칙.
+# 기존 4종 CSV만 있는 환경에서는 각 축에 기본 시나리오 하나만 노출되어
+# 이전 버전과 완전히 동일하게 동작한다.
+
+# (1) 사업장별 연간 사용량 — base: Annual_Usage.csv / 그 외: Annual_Usage_{코드}.csv
+USAGE_SCENARIOS = {"base": "기본(Base)", "worst": "Worst"}
+DEFAULT_USAGE_SCENARIO = "base"
+
+# (2) PPA 단가 — Annual_PPA.csv 접미사 컬럼. fixed: 기존 *_M / variable: *_V
+#     variable 컬럼이 일부 발전원에만 있으면(예: PV_V, On_W_V만),
+#     나머지 발전원은 fixed(*_M) 단가로 폴백한다.
+PPA_PRICE_SCENARIOS = {
+    "fixed": {"suffix": PPA_SCENARIO, "label": "고정(현행)"},
+    "variable": {"suffix": "V", "label": "연도별 변동"},
+}
+DEFAULT_PPA_SCENARIO = "fixed"
+
+# (3) SMP — Annual_Rate.csv 의 SMP_{코드} 배수 컬럼 (연도별 배수 곡선)
+SMP_SCENARIOS = {"M": "기본안", "H": "고가", "L": "저가"}
+DEFAULT_SMP_SCENARIO = "M"
+
 EFF_DECAY = 0.995       # 연 0.5% 발전 효율 감소
 PPA_REF_PERIOD = 20     # 20년마다 PPA 기준연도(vintage) 갱신
 
@@ -109,6 +132,9 @@ def rate_col(item):
 @dataclass
 class SimulationParams:
     re_goal_column: str = "RE33_SEC"        # RE 목표 시나리오 컬럼
+    usage_scenario: str = DEFAULT_USAGE_SCENARIO   # 사용량 시나리오 (base/worst)
+    ppa_scenario: str = DEFAULT_PPA_SCENARIO       # PPA 단가 시나리오 (fixed/variable)
+    smp_scenario: str = DEFAULT_SMP_SCENARIO       # SMP 시나리오 (M/H/L)
     sec_stop: bool = False                   # 2043년 이후 SEC 가동 중단 여부
     smr_mode: bool = False                   # SMR 최적화 포함
     flat_pv_mode: bool = True                # 균등태양광 최적화 포함
