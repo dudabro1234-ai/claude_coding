@@ -324,6 +324,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
 <!-- ═══ 데이터 페이지 ═══ -->
 <div class="page" id="page-data">
 <div class="data-page">
+  <div id="dataError"></div>
   <div class="grid2">
     <div class="card"><div class="card-head"><div class="card-title">사업장별 연간 사용량</div><div class="card-sub">실데이터 · TWh</div></div><div class="chart-wrap"><canvas id="usageChart"></canvas></div></div>
     <div class="card"><div class="card-head"><div class="card-title">발전원별 PPA 단가</div><div class="card-sub">실데이터 · 원/kWh</div></div><div class="chart-wrap"><canvas id="ppaChart"></canvas></div><div class="chart-legend" id="ppaLegend"></div></div>
@@ -709,34 +710,61 @@ function renderSnapshots() {
 }
 
 /* ═══ 데이터 페이지 (실데이터) ═══ */
+function dataPageMsg(html, cls) {
+  document.getElementById('dataError').innerHTML = html
+    ? `<div class="signal ${cls||'error'}" style="margin-bottom:12px;"><b>${cls==='info'?'ℹ':'⚠'}</b><div>${html}</div></div>` : '';
+}
 async function loadInputs() {
   try {
     const inp = await getJSON('api/inputs');
     const years = inp.years;
-    mkChart('usageChart','line',{ labels: years, datasets: Object.entries(inp.usage).map(([code, arr], i) => {
-      const c = ['#0f766e','#3b82f6','#f59e0b'][i] || '#888';
-      return { label: code, data: arr, borderColor: c, backgroundColor: c+'22', borderWidth: 2, pointRadius: 0, fill: true, tension: .3 };
-    })}, '%TWh');
-    mkChart('ppaChart','line',{ labels: years, datasets: Object.entries(inp.ppa).map(([src, arr]) => ({ label: src, data: arr, borderColor: COLORS[src]||'#888', borderWidth: 2, pointRadius: 0, tension: .2 })) }, '%원');
-    document.getElementById('ppaLegend').innerHTML = Object.keys(inp.ppa).map(s => `<div class="item"><div class="swatch" style="background:${COLORS[s]||'#888'};"></div>${s}</div>`).join('');
-    mkChart('smpChart','line',{ labels: years, datasets: [{ label:'SMP', data: inp.smp, borderColor:'#0f766e', backgroundColor:'rgba(15,118,110,.1)', borderWidth:2, pointRadius:0, fill:true, tension:.3 }] }, '%원');
-    const hours = Array.from({length:24}, (_,i)=>i);
-    const pv = hours.map(h => Math.max(0, Math.exp(-Math.pow((h-12.5)/3.5,2))));
-    const wt = hours.map(h => .3 + .15*Math.sin((h-6)*Math.PI/12) + .1*Math.cos(h*Math.PI/6));
-    mkChart('patternChart','line',{ labels: hours.map(h=>h+':00'), datasets:[
-      { label:'태양광', data:pv, borderColor:COLORS.태양광, backgroundColor:'rgba(245,158,11,.15)', borderWidth:2, pointRadius:0, fill:true, tension:.4 },
-      { label:'풍력', data:wt, borderColor:COLORS.해상풍력, backgroundColor:'rgba(30,64,175,.1)', borderWidth:2, pointRadius:0, fill:true, tension:.4 } ]});
-    const labelMap = { VC_M:'전력량요금', FC_M:'기후환경+연료비', BC_M:'기본요금', EAC_M:'EAC 단가', SMP_M:'SMP 배수' };
-    document.querySelector('#rateTable tbody').innerHTML = Object.entries(inp.rate).map(([k,v]) =>
-      `<tr><td>${labelMap[k]||k}</td><td class="mono">${k}</td><td class="mono">${v==null?'—':Number(v).toLocaleString()}</td></tr>`).join('');
-  } catch (e) { /* 데이터 페이지는 실패해도 시뮬레이션은 계속 */ }
+    // 섹션별 독립 렌더링 — 한 차트의 데이터가 문제여도 나머지는 표시
+    const part = (fn) => { try { fn(); } catch (e) { console.error('데이터 탭 섹션 오류:', e); } };
+    part(() => {
+      if (!inp.usage) return;
+      mkChart('usageChart','line',{ labels: years, datasets: Object.entries(inp.usage).map(([code, arr], i) => {
+        const c = ['#0f766e','#3b82f6','#f59e0b'][i] || '#888';
+        return { label: code, data: arr, borderColor: c, backgroundColor: c+'22', borderWidth: 2, pointRadius: 0, fill: true, tension: .3 };
+      })}, '%TWh');
+    });
+    part(() => {
+      if (!inp.ppa) return;
+      mkChart('ppaChart','line',{ labels: years, datasets: Object.entries(inp.ppa).map(([src, arr]) => ({ label: src, data: arr, borderColor: COLORS[src]||'#888', borderWidth: 2, pointRadius: 0, tension: .2 })) }, '%원');
+      document.getElementById('ppaLegend').innerHTML = Object.keys(inp.ppa).map(s => `<div class="item"><div class="swatch" style="background:${COLORS[s]||'#888'};"></div>${s}</div>`).join('');
+    });
+    part(() => {
+      if (!inp.smp) return;
+      mkChart('smpChart','line',{ labels: years, datasets: [{ label:'SMP', data: inp.smp, borderColor:'#0f766e', backgroundColor:'rgba(15,118,110,.1)', borderWidth:2, pointRadius:0, fill:true, tension:.3 }] }, '%원');
+    });
+    part(() => {
+      const hours = Array.from({length:24}, (_,i)=>i);
+      const pv = hours.map(h => Math.max(0, Math.exp(-Math.pow((h-12.5)/3.5,2))));
+      const wt = hours.map(h => .3 + .15*Math.sin((h-6)*Math.PI/12) + .1*Math.cos(h*Math.PI/6));
+      mkChart('patternChart','line',{ labels: hours.map(h=>h+':00'), datasets:[
+        { label:'태양광', data:pv, borderColor:COLORS.태양광, backgroundColor:'rgba(245,158,11,.15)', borderWidth:2, pointRadius:0, fill:true, tension:.4 },
+        { label:'풍력', data:wt, borderColor:COLORS.해상풍력, backgroundColor:'rgba(30,64,175,.1)', borderWidth:2, pointRadius:0, fill:true, tension:.4 } ]});
+    });
+    part(() => {
+      if (!inp.rate) return;
+      const labelMap = { VC_M:'전력량요금', FC_M:'기후환경+연료비', BC_M:'기본요금', EAC_M:'EAC 단가', SMP_M:'SMP 배수' };
+      document.querySelector('#rateTable tbody').innerHTML = Object.entries(inp.rate).map(([k,v]) =>
+        `<tr><td>${labelMap[k]||k}</td><td class="mono">${k}</td><td class="mono">${v==null?'—':Number(v).toLocaleString()}</td></tr>`).join('');
+    });
+    // 서버가 알려준 섹션별 경고 표시 (실데이터 형식 문제 파악용)
+    if (inp.warnings && inp.warnings.length) {
+      dataPageMsg('일부 입력 데이터를 읽지 못했습니다:<br>' + inp.warnings.map(escapeHtml).join('<br>'), 'info');
+    } else dataPageMsg('');
+  } catch (e) {
+    // 예전에는 조용히 삼켜서 빈 화면만 보였음 — 이제 원인을 화면에 표시
+    dataPageMsg('데이터 탭 로드 실패: ' + escapeHtml(e.message) + '<br>입력 파일 형식은 docs/DATA_SPEC.md 를 참고하세요. (시뮬레이션 탭은 계속 사용 가능합니다)');
+  }
 }
 
 /* ═══ 차트 헬퍼 ═══ */
 function mkChart(id, type, data, yUnit, pct, stacked) {
   const ctx = document.getElementById(id); if (!ctx) return;
   if (charts[id]) charts[id].destroy();
-  const fmt = v => { if (yUnit === '%%') return v + '%'; const u = (yUnit||'').replace('%',''); return (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : v) + u; };
+  const fmt = v => { if (yUnit === '%%') return v + '%'; const u = (yUnit||'').replace('%',''); return (Math.abs(v) >= 1000 ? Math.round(v).toLocaleString() : Math.round(v*100)/100) + u; };
   charts[id] = new Chart(ctx.getContext('2d'), { type, data, options: {
     responsive: true, maintainAspectRatio: false,
     plugins: { legend: { display: data.datasets.length > 1 && id !== 'mixChart', position: 'bottom', labels: { font: { size: 10.5 }, boxWidth: 9, padding: 9 } },

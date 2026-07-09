@@ -14,6 +14,7 @@ RE100 PPA 시뮬레이터 — 백엔드 서버 (Python 표준 라이브러리만
 """
 
 import json
+import math
 import os
 import socket
 import sys
@@ -116,10 +117,25 @@ def capacity_by_source_by_year(fixed_ppas):
 
 
 def f(x):
+    """안전한 float 변환. 실데이터의 빈 셀(NaN)·무한대도 0.0으로 — 차트가 깨지지 않게."""
     try:
-        return float(x)
+        v = float(x)
     except (TypeError, ValueError):
         return 0.0
+    return v if math.isfinite(v) else 0.0
+
+
+def _json_safe(o):
+    """JSON 표준에 없는 NaN/Infinity를 None으로 치환.
+    실데이터에 빈 셀이 있으면 json.dumps가 'NaN' 토큰을 내보내는데,
+    브라우저 JSON.parse는 이를 거부해 화면(특히 데이터 탭)이 통째로 비는 문제가 있었다."""
+    if isinstance(o, float):                # numpy float도 float의 하위 타입
+        return o if math.isfinite(o) else None
+    if isinstance(o, dict):
+        return {k: _json_safe(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_json_safe(v) for v in o]
+    return o
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -148,29 +164,59 @@ def api_meta():
 
 
 def api_inputs():
-    """입력 페이지용 — 실제 CSV에서 파생한 시계열."""
+    """입력 페이지용 — 실제 CSV에서 파생한 시계열.
+
+    실데이터는 형식이 제각각이라 섹션별로 독립 처리한다:
+    한 섹션이 실패해도 나머지 차트는 그대로 표시되고, 실패 사유는 warnings로 내려보내
+    데이터 탭에 표시된다 (예전에는 한 곳만 문제여도 탭 전체가 빈 화면이었음).
+    """
     bundle = get_bundle(DATA_DIR)
-    # 사업장별 사용량 (TWh)
-    usage = {c: [] for c in SITE_CODES}
-    for y in YEARS:
-        row = bundle.usage[y]
-        for c in SITE_CODES:
-            col = find_col(row, c, required=False)
-            usage[c].append(f(row[col]) / 1e6 if col else 0.0)  # MWh→TWh
-    # 발전원별 PPA 단가
-    ppa = {}
-    for src in ["태양광", "육상풍력", "해상풍력", "SMR"]:
-        d = bundle.price_dicts.get(src, {})
-        ppa[src] = [f(d.get(y, 0)) for y in YEARS]
-    # 연도별 평균 SMP
-    smp = [round(f(bundle.hourly[y][bundle.smp_col].mean()), 1) for y in YEARS]
-    # 요금 단가 (2026 기준)
-    r0 = bundle.rate[YEARS[0]]
-    def rget(col):
-        c = find_col(r0, col, required=False)
-        return f(r0[c]) if c else None
-    rate = {k: rget(k) for k in ["VC_M", "FC_M", "BC_M", "EAC_M", "SMP_M"]}
-    return {"years": YEARS, "usage": usage, "ppa": ppa, "smp": smp, "rate": rate}
+    result = {"years": YEARS, "warnings": []}
+
+    def section(name, default, fn):
+        try:
+            result[name] = fn()
+        except Exception as e:
+            result[name] = default
+            result["warnings"].append(f"{name}: {type(e).__name__} — {e}")
+
+    def _usage():
+        usage = {c: [] for c in SITE_CODES}
+        for y in YEARS:
+            row = bundle.usage[y]
+            for c in SITE_CODES:
+                col = find_col(row, c, required=False)
+                usage[c].append(f(row[col]) / 1e6 if col else 0.0)  # MWh→TWh
+        return usage
+
+    def _ppa():
+        ppa = {}
+        for src in ["태양광", "육상풍력", "해상풍력", "SMR"]:
+            d = bundle.price_dicts.get(src, {})
+            ppa[src] = [f(d.get(y, 0)) for y in YEARS]
+        return ppa
+
+    def _smp():
+        return [round(f(pd_numeric_mean(bundle.hourly[y][bundle.smp_col])), 1) for y in YEARS]
+
+    def _rate():
+        r0 = bundle.rate[YEARS[0]]
+        def rget(col):
+            c = find_col(r0, col, required=False)
+            return f(r0[c]) if c else None
+        return {k: rget(k) for k in ["VC_M", "FC_M", "BC_M", "EAC_M", "SMP_M"]}
+
+    section("usage", {c: [0.0] * len(YEARS) for c in SITE_CODES}, _usage)
+    section("ppa", {}, _ppa)
+    section("smp", [0.0] * len(YEARS), _smp)
+    section("rate", {}, _rate)
+    return result
+
+
+def pd_numeric_mean(series):
+    """숫자가 아닌 값이 섞여 있어도 평균을 구한다 (실데이터 SMP 컬럼 방어)."""
+    import pandas as pd
+    return pd.to_numeric(series, errors="coerce").mean()
 
 
 def api_run(payload):
@@ -398,7 +444,7 @@ class Handler(BaseHTTPRequestHandler):
         pass  # 조용히
 
     def _send_json(self, obj, status=200):
-        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        body = json.dumps(_json_safe(obj), ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))

@@ -16,6 +16,8 @@
   [6] 엑셀 통합문서(.xlsx)로 저장한 입력 파일도 그대로 로드 (CSV와 혼용 가능)
   [7] xlsx 내용인데 이름만 *.csv 인 파일도 자동 감지해 로드 (엑셀 '다른 이름으로 저장' 실수 대응)
   [8] 파일 탐색 우선순위: 같은 이름의 .csv 가 없으면 .xlsx → .xls 순으로 찾음
+  [9] 실데이터 빈 셀(NaN) → /api/inputs 응답이 표준 JSON (브라우저 JSON.parse 통과)
+      — NaN 토큰 때문에 데이터 탭 전체가 빈 화면이 되던 버그의 회귀 방지
 """
 
 import os
@@ -115,6 +117,25 @@ def main():
         assert find_input_file(d, "Hourly_Data").endswith(".xlsx")
         assert find_input_file(d, "Annual_PPA", required=False) is None
         print("[8] 파일 탐색 OK — .csv → .xlsx 순 폴백")
+
+        # ── [9] 빈 셀(NaN)이 있어도 /api/inputs 는 표준 JSON ──
+        import json
+        d = os.path.join(tmp, "nan")
+        transcode_dir(d, "utf-8-sig")
+        u = pd.read_csv(os.path.join(d, "Annual_Usage.csv"))
+        u.loc[3:, "B"] = float("nan")          # 실데이터에서 흔한 빈 셀 재현
+        u.loc[:, "C"] = float("nan")
+        u.to_csv(os.path.join(d, "Annual_Usage.csv"), index=False)
+        import server
+        old_dir = server.DATA_DIR
+        try:
+            server.DATA_DIR = d
+            body = json.dumps(server._json_safe(server.api_inputs()), ensure_ascii=False)
+        finally:
+            server.DATA_DIR = old_dir
+        assert "NaN" not in body
+        json.loads(body, parse_constant=lambda s: (_ for _ in ()).throw(ValueError(s)))
+        print("[9] NaN 방어 OK — /api/inputs 가 브라우저 호환 표준 JSON")
 
     # ── [5] data/real_data 자동 인식 (서버 DATA_DIR 선택 로직) ──
     real_dir = os.path.join(BASE_DIR, "data", "real_data")
