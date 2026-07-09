@@ -1,0 +1,6 @@
+# RE100 PPA 대시보드 의존성
+pandas>=2.0
+numpy>=1.24
+streamlit>=1.30      # 웹 대시보드 (3단계)
+xlsxwriter>=3.1      # 엑셀 출력
+openpyxl>=3.1        # 엑셀 읽기/업로드 처리
