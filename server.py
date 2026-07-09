@@ -33,7 +33,7 @@ except Exception:
     pass
 
 from core.config import (
-    YEARS, SOURCES, SITES, SITE_CODES, DEFAULT_FIXED_PPAS,
+    YEARS, SOURCES, SITES, SITE_CODES, DEFAULT_FIXED_PPAS, DEFAULT_GREEDY_SEED_PPAS,
     COMPANY_USAGE_COL, SimulationParams, ppa_price_col,
     DEFAULT_USAGE_SCENARIO, DEFAULT_PPA_SCENARIO, DEFAULT_SMP_SCENARIO,
 )
@@ -158,6 +158,7 @@ def api_meta():
             "smp": DEFAULT_SMP_SCENARIO,
         },
         "default_fixed_ppas": DEFAULT_FIXED_PPAS,
+        "greedy_seed_ppas": DEFAULT_GREEDY_SEED_PPAS,
         "data_dir": DATA_DIR,
         "llm": "사내 LLM" if agent.llm_available() else "Mock",
     }
@@ -352,13 +353,24 @@ def api_site(payload):
 
 
 def api_greedy(payload):
-    """run_greedy(수십초) — SMR/균등 등 최적화 옵션이 실제 반영되는 자동 포트폴리오 탐색."""
+    """run_greedy(수십초) — SMR/균등 등 최적화 옵션이 실제 반영되는 자동 포트폴리오 탐색.
+
+    portfolio_mode:
+      'seed'(기본) : 원본 Greedy_251020.py 의 초기 포트폴리오(4건)에서 출발해 신규 계약 탐색
+      'full'       : 기체결 전체에서 출발 — 이미 EAC 30% 규칙에 걸려 있으면 추가 계약 0건이 정상
+    """
     bundle = get_bundle(DATA_DIR)
     params = make_params(payload)
+    mode = (payload or {}).get("portfolio_mode", "seed")
+    if mode == "seed" and not (payload or {}).get("fixed_ppas"):
+        params.fixed_ppas = [dict(p) for p in DEFAULT_GREEDY_SEED_PPAS]
     base_cost, _ = company_total_cost(bundle, params, params.fixed_ppas)
     res = run_greedy(bundle, params)
     final_cost, _ = company_total_cost(bundle, params, res["portfolio"])
     added = res["optimization_log"].to_dict(orient="records") if len(res["optimization_log"]) else []
+    # 추가 0건일 때 원인 설명용 — 후보 평가 상태 분포 (예: 전부 'EAC규칙위반')
+    ev = res["evaluation_log"]
+    candidate_stats = ev["상태"].value_counts().to_dict() if len(ev) else {}
     # 최종 포트폴리오 발전원별 합계 (MW)
     by_source = {}
     for p in res["portfolio"]:
@@ -372,6 +384,8 @@ def api_greedy(payload):
         "mix": capacity_by_source_by_year(res["portfolio"]),   # 최적화 반영 믹스 차트용
         "opt_sources": params.opt_sources(),
         "portfolio": res["portfolio"],               # 사업장 배분 파이프라인용 전체 계약 목록
+        "portfolio_mode": mode,
+        "candidate_stats": candidate_stats,          # 추가 0건 사유 설명용
     }
 
 

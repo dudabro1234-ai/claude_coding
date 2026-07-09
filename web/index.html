@@ -271,7 +271,7 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
     </div>
 
     <div class="grid2 row-gap">
-      <div class="card"><div class="card-head"><div class="card-title">RE100 달성 경로</div><div class="card-sub">목표·PPA·EAC (%)</div></div><div class="chart-wrap"><canvas id="rePathChart"></canvas></div></div>
+      <div class="card"><div class="card-head"><div class="card-title">RE100 달성 경로</div><div class="card-sub" id="rePathSub">목표·PPA·EAC (%)</div></div><div class="chart-wrap"><canvas id="rePathChart"></canvas></div></div>
       <div class="card"><div class="card-head"><div class="card-title">연간 총비용</div><div class="card-sub">백만원</div></div><div class="chart-wrap"><canvas id="costChart"></canvas></div></div>
     </div>
 
@@ -282,8 +282,15 @@ body { background: var(--bg); color: var(--text); font-family: var(--sans); font
     </div>
 
     <div class="card">
-      <div class="card-head"><div class="card-title">자동 최적화 <span class="card-sub">비용을 줄이는 신규 계약 탐색 · SMR/균등 옵션 반영</span></div><button class="mini-btn" onclick="runGreedy()">실행</button></div>
-      <div id="greedyResult" class="placeholder">좌측 ‘자동 최적화’를 누르면 현재 기체결 PPA에서 출발해 비용 최소 포트폴리오를 자동 탐색합니다.</div>
+      <div class="card-head"><div class="card-title">자동 최적화 <span class="card-sub">비용을 줄이는 신규 계약 탐색 · SMR/균등 옵션 반영</span></div>
+        <select class="scn-select" id="greedyMode" style="width:auto;margin-right:8px;" title="최적화 시작 포트폴리오">
+          <option value="seed" selected>시드에서 신규 탐색 (원본 Greedy 초기값)</option>
+          <option value="full">기체결 전체에 추가 탐색</option>
+        </select>
+        <button class="mini-btn" onclick="runGreedy()">실행</button></div>
+      <div id="greedyResult" class="placeholder">‘실행’을 누르면 선택한 시작 포트폴리오에서 출발해 비용 최소 조합을 자동 탐색합니다.
+        <br><span style="font-size:11px;color:var(--text-dim);">· 시드: 원본 Greedy_251020.py 초기 4건에서 계약을 쌓아가는 설계 (권장)
+        <br>· 기체결 전체: 확정 포트폴리오에 추가 여지 탐색 — EAC 비율이 이미 30% 미만이면 추가 0건이 정상입니다</span></div>
     </div>
 
     <div class="card" id="compareCard" style="display:none;">
@@ -522,13 +529,19 @@ function renderDashboard(d) {
   document.getElementById('kpiRE').textContent = Math.round(k.re_2050);
   document.getElementById('kpiCap').textContent = k.cap_2050.toLocaleString();
   document.getElementById('kpiEAC').textContent = Math.round(k.eac_avg);
-  document.getElementById('kpiREDelta').textContent = `목표 ${STATE.goal.includes('44')?'RE44':'RE33'} 기준`;
+  // _SEC 시나리오: SEC 수전량이 RE로 인정되어, 목표 컬럼 값은 'SEC 제외분'만 나타냄
+  //  → 2050년 목표가 100% 미만(예: 77%)으로 보여도 SEC 몫과 합치면 RE100 달성
+  document.getElementById('kpiREDelta').textContent =
+    `목표 ${STATE.goal.includes('44')?'RE44':'RE33'} 기준` + (STATE.goal.includes('_SEC') ? ' · SEC 수전 제외 목표' : '');
   document.getElementById('kpiTotalDelta').textContent = scenarioLabel();
   const eacEl = document.getElementById('kpiEACDelta');
   if (k.eac_avg < 30) { eacEl.textContent = '⚠ 30% 미만'; eacEl.className = 'kpi-delta bad'; }
   else { eacEl.textContent = '30% 충족 ✓'; eacEl.className = 'kpi-delta good'; }
 
   drawMix(d.mix, d.re_path.years);
+  document.getElementById('rePathSub').textContent = STATE.goal.includes('_SEC')
+    ? `목표·PPA·EAC (%) · ${STATE.goal}는 SEC 수전 제외분 — 목표선+SEC몫=RE100`
+    : '목표·PPA·EAC (%)';
   const rp = d.re_path;
   mkChart('rePathChart','line',{ labels: rp.years, datasets:[
     { label:'목표', data: rp.target, borderColor:'#9ca3af', borderDash:[4,4], borderWidth:1.5, pointRadius:0, fill:false },
@@ -599,19 +612,30 @@ async function runGreedy() {
   btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> 최적화 중…';
   box.innerHTML = '<span class="spinner"></span> 후보 계약을 평가하며 비용 최소 조합 탐색 중… (수십 초~수 분)';
   try {
-    const d = await postJSON('api/greedy', buildParams());
+    const body = buildParams();
+    body.portfolio_mode = (document.getElementById('greedyMode') || {}).value || 'seed';
+    const d = await postJSON('api/greedy', body);
     greedyPortfolio = d.portfolio || null;
     const rows = (d.added || []).map(a => `<tr><td class="mono">${a.Step}</td><td>${a.source}</td><td class="mono">${a.capacity} MW</td><td class="mono">${a.start_year}</td></tr>`).join('');
+    // 추가 0건일 때 사유 설명 (후보 평가 상태 분포 기반)
+    const st = d.candidate_stats || {};
+    let zeroMsg = '추가할 계약 없음 — 비용을 더 줄이는 계약이 없습니다.';
+    if (st['EAC규칙위반'] && !st['비용절감']) {
+      zeroMsg = `추가할 계약 없음 — 후보 ${st['EAC규칙위반']}건 전부 <b>EAC 30% 규칙 위반</b>으로 탈락했습니다.<br>
+        <span style="font-size:11px;color:var(--text-muted);">현재 시작 포트폴리오의 EAC 비율이 이미 30% 미만이라(상단 KPI 참조) 어떤 신규 계약도 담을 수 없습니다.
+        '시드에서 신규 탐색' 모드로 실행하거나 기체결 물량을 줄여보세요.</span>`;
+    }
+    const baseLabel = d.portfolio_mode === 'seed' ? '시드만' : '기체결만';
     box.classList.remove('placeholder');
     box.innerHTML = `
       <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:9px;">
-        <div>기체결만: <b>${d.base_cost_trillion}조</b></div>
+        <div>${baseLabel}: <b>${d.base_cost_trillion}조</b></div>
         <div>최적화 후: <b style="color:var(--accent-strong);">${d.final_cost_trillion}조</b></div>
         <div>절감 <b style="color:var(--good);">${(d.saving_million||0).toLocaleString()}백만원</b></div>
         <div>추가 계약 <b>${(d.added||[]).length}건</b></div>
       </div>
       ${rows ? `<div style="max-height:170px;overflow:auto;border:1px solid var(--border);border-radius:8px;margin-bottom:9px;">
-        <table class="data-table"><thead><tr><th>Step</th><th>발전원</th><th>용량</th><th>시작연도</th></tr></thead><tbody>${rows}</tbody></table></div>` : '<div style="margin-bottom:9px;">추가할 계약 없음 (이미 최적).</div>'}
+        <table class="data-table"><thead><tr><th>Step</th><th>발전원</th><th>용량</th><th>시작연도</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div style="margin-bottom:9px;">${zeroMsg}</div>`}
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
         <button class="mini-btn primary" onclick="runSite(greedyPortfolio)">→ 이 포트폴리오로 사업장 배분 실행</button>
         <span style="font-size:11px;color:var(--text-muted);">믹스 차트를 최적화 결과로 갱신했습니다 (탐색: ${(d.opt_sources||[]).join(', ')})</span>

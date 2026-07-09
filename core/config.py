@@ -155,6 +155,19 @@ class SimulationParams:
         return srcs
 
 
+### 7-1. 그리디 최적화 기본 시드 (원본 Greedy_251020.py 의 초기 포트폴리오) ###
+# 자동 최적화는 '작은 초기 포트폴리오'에서 출발해 계약을 쌓아가는 설계다.
+# 기체결 전체(DEFAULT_FIXED_PPAS)에서 출발하면 EAC 30% 규칙에 이미 걸려
+# 어떤 신규 계약도 추가할 수 없으므로(전 후보 EAC규칙위반) 시드를 별도로 둔다.
+
+DEFAULT_GREEDY_SEED_PPAS = [
+    {'source': '태양광', 'capacity': 100, 'start_year': 2027},
+    {'source': '태양광', 'capacity': 70, 'start_year': 2029},
+    {'source': '육상풍력', 'capacity': 40, 'start_year': 2026, 'end_year': 2027},
+    {'source': '수력', 'capacity': 18, 'start_year': 2026},
+]
+
+
 ### 8. 기본 기체결 PPA (Check / Site 기준 전체 목록) ###
 
 DEFAULT_FIXED_PPAS = [
