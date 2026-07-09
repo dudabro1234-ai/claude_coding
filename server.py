@@ -38,6 +38,7 @@ from core.config import (
 )
 from core.engine import (
     load_data, run_check, run_site, run_greedy, find_col, company_total_cost,
+    find_input_file, INPUT_EXTS,
 )
 import agent
 
@@ -47,9 +48,10 @@ REAL_DATA_DIR = os.path.join(BASE_DIR, "data", "real_data")
 def _default_data_dir():
     """데이터 폴더 자동 선택: PPA_DATA_DIR > data/real_data(실데이터가 있으면) > data/sample.
 
-    사내 적용 시 data/real_data 폴더에 실제 CSV 4종만 넣으면 환경변수 설정 없이 바로 동작한다.
+    사내 적용 시 data/real_data 폴더에 실제 파일 4종(csv 또는 xlsx/xls)만 넣으면
+    환경변수 설정 없이 바로 동작한다.
     """
-    if os.path.exists(os.path.join(REAL_DATA_DIR, "Hourly_Data.csv")):
+    if find_input_file(REAL_DATA_DIR, "Hourly_Data", required=False):
         return REAL_DATA_DIR
     return os.path.join(BASE_DIR, "data", "sample")
 
@@ -72,7 +74,7 @@ def _data_signature(data_dir):
     sig = []
     try:
         for name in sorted(os.listdir(data_dir)):
-            if name.lower().endswith(".csv"):
+            if name.lower().endswith(INPUT_EXTS):
                 p = os.path.join(data_dir, name)
                 sig.append((name, os.path.getmtime(p), os.path.getsize(p)))
     except OSError:
@@ -485,18 +487,19 @@ def lan_ip():
 
 def main():
     port = int(sys.argv[1]) if len(sys.argv) > 1 else int(os.environ.get("PPA_PORT", "8700"))
-    if not os.path.exists(os.path.join(DATA_DIR, "Hourly_Data.csv")):
-        print(f"[경고] 데이터 폴더에서 Hourly_Data.csv 를 찾을 수 없습니다: {DATA_DIR}")
+    if not find_input_file(DATA_DIR, "Hourly_Data", required=False):
+        print(f"[경고] 데이터 폴더에서 Hourly_Data.csv(.xlsx/.xls) 를 찾을 수 없습니다: {DATA_DIR}")
         print("       PPA_DATA_DIR 환경변수로 올바른 폴더를 지정하세요.")
     else:
         tag = " (실데이터 자동 인식)" if DATA_DIR == REAL_DATA_DIR else ""
         print(f"[데이터] {DATA_DIR}{tag}")
     # data/real_data 에 파일을 넣다 만 경우 안내 (있는데 4종이 다 없으면 샘플로 뜨는 이유 설명)
     if DATA_DIR != REAL_DATA_DIR and os.path.isdir(REAL_DATA_DIR):
-        need = ["Hourly_Data.csv", "Annual_Usage.csv", "Annual_PPA.csv", "Annual_Rate.csv"]
-        missing = [f for f in need if not os.path.exists(os.path.join(REAL_DATA_DIR, f))]
+        need = ["Hourly_Data", "Annual_Usage", "Annual_PPA", "Annual_Rate"]
+        missing = [f for f in need if not find_input_file(REAL_DATA_DIR, f, required=False)]
         if missing:
-            print(f"[안내] data/real_data 폴더가 있지만 다음 파일이 없어 샘플로 실행합니다: {', '.join(missing)}")
+            print("[안내] data/real_data 폴더가 있지만 다음 파일이 없어 샘플로 실행합니다: "
+                  + ", ".join(f"{m}.csv(.xlsx)" for m in missing))
     local_url = f"http://localhost:{port}/"
     ip = lan_ip()
     print("=" * 56)

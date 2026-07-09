@@ -68,13 +68,48 @@ def get_ppa_reference_year(year, start_year):
 # CSV 인코딩 자동 판별 순서 — 사내 실데이터는 엑셀 저장본(CP949)인 경우가 많다.
 CSV_ENCODINGS = ("utf-8-sig", "cp949", "utf-8", "euc-kr")
 
+# 엑셀 파일 매직 바이트 — 확장자가 아니라 내용으로 판별한다.
+# (엑셀 통합문서를 이름만 *.csv 로 저장/변경한 경우도 자동으로 엑셀로 읽음)
+_XLSX_MAGIC = b"PK\x03\x04"          # xlsx (zip 컨테이너)
+_XLS_MAGIC = b"\xd0\xcf\x11\xe0"     # 구형 xls (OLE2)
+
+# 입력 파일 탐색 확장자 우선순위 (find_input_file)
+INPUT_EXTS = (".csv", ".xlsx", ".xls")
+
+
+def _clean_columns(df):
+    df.columns = [str(c).replace("﻿", "").strip() for c in df.columns]
+    return df
+
+
+def _read_excel_kr(path, engine):
+    """엑셀 통합문서(첫 번째 시트)를 읽는다. openpyxl 미설치 시 설치 방법 안내."""
+    try:
+        df = pd.read_excel(path, sheet_name=0, engine=engine)
+    except ImportError as e:
+        pkg = "openpyxl" if engine == "openpyxl" else "xlrd"
+        raise ImportError(
+            f"'{os.path.basename(path)}' 는 엑셀 통합문서 형식입니다. "
+            f"읽으려면 {pkg} 패키지가 필요합니다:  pip install {pkg}  (원인: {e})")
+    return _clean_columns(df)
+
 
 def read_csv_kr(path, **kwargs):
-    """한글 CSV 안전 로더 — UTF-8(BOM 포함)과 엑셀 저장본(CP949/EUC-KR)을 자동 판별.
+    """입력 파일 안전 로더 — 파일 '내용'을 보고 형식을 자동 판별한다.
 
+    · 엑셀 통합문서(xlsx/xls): 확장자와 무관하게 매직 바이트로 감지해 첫 시트를 읽음
+      (이름만 *.csv 인 엑셀 파일도 정상 로드)
+    · CSV: UTF-8(BOM 포함)·CP949/EUC-KR(엑셀 'CSV' 저장본) 인코딩 자동 판별
     컬럼명의 BOM·앞뒤 공백도 함께 정리하므로, 어떤 방식으로 저장한 파일이든
     같은 컬럼명 규칙(DATA_SPEC.md)으로 매칭된다.
     """
+    with open(path, "rb") as f:
+        head = f.read(8)
+    if head.startswith(_XLSX_MAGIC):
+        return _read_excel_kr(path, "openpyxl")
+    if head.startswith(_XLS_MAGIC):
+        return _read_excel_kr(path, "xlrd")
+
     last_err = None
     for enc in CSV_ENCODINGS:
         try:
@@ -82,12 +117,23 @@ def read_csv_kr(path, **kwargs):
         except (UnicodeDecodeError, UnicodeError) as e:
             last_err = e
             continue
-        df.columns = [str(c).replace("﻿", "").strip() for c in df.columns]
-        return df
+        return _clean_columns(df)
     raise UnicodeError(
         f"'{os.path.basename(path)}' 파일의 문자 인코딩을 인식할 수 없습니다 "
         f"(시도한 인코딩: {', '.join(CSV_ENCODINGS)}). "
         f"엑셀에서 'CSV UTF-8(쉼표로 분리)' 형식으로 다시 저장한 뒤 시도해 보세요. 원인: {last_err}")
+
+
+def find_input_file(data_dir, stem, required=True):
+    """논리 이름(stem)의 실제 입력 파일 경로. Hourly_Data.csv → 없으면 .xlsx → .xls 순."""
+    for ext in INPUT_EXTS:
+        p = os.path.join(data_dir, stem + ext)
+        if os.path.exists(p):
+            return p
+    if required:
+        raise FileNotFoundError(
+            f"'{data_dir}' 폴더에서 {stem}.csv (또는 {stem}.xlsx / {stem}.xls) 파일을 찾을 수 없습니다.")
+    return None
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -165,15 +211,12 @@ def load_data(data_dir):
       · SMP      : Annual_Rate.csv 의 SMP_H / SMP_L 배수 컬럼
     기존 4종 CSV만 있는 폴더는 이전 버전과 완전히 동일하게 동작한다.
     """
-    def _p(name):
-        return os.path.join(data_dir, name)
-
-    # 인코딩 자동 판별 로더 사용 — UTF-8 파일도, 엑셀 저장본(CP949)도 그대로 로드된다.
-    # (컬럼명 BOM·공백 정리는 read_csv_kr 안에서 일괄 처리)
-    df_hourly = read_csv_kr(_p("Hourly_Data.csv"))
-    df_usage = read_csv_kr(_p("Annual_Usage.csv"), thousands=",")
-    df_ppa = read_csv_kr(_p("Annual_PPA.csv"), thousands=",")
-    df_rate = read_csv_kr(_p("Annual_Rate.csv"), thousands=",")
+    # 형식(CSV/엑셀)·인코딩 자동 판별 로더 사용 — UTF-8/CP949 CSV, xlsx/xls 모두 그대로 로드.
+    # 파일은 .csv → .xlsx → .xls 순으로 찾는다 (컬럼명 BOM·공백 정리는 read_csv_kr 일괄 처리).
+    df_hourly = read_csv_kr(find_input_file(data_dir, "Hourly_Data"))
+    df_usage = read_csv_kr(find_input_file(data_dir, "Annual_Usage"), thousands=",")
+    df_ppa = read_csv_kr(find_input_file(data_dir, "Annual_PPA"), thousands=",")
+    df_rate = read_csv_kr(find_input_file(data_dir, "Annual_Rate"), thousands=",")
 
     smp_col = find_col(df_hourly, "SMP")
     factor_adj_col = find_col(df_hourly, "Factor_ADJ")
@@ -186,8 +229,8 @@ def load_data(data_dir):
     for code in USAGE_SCENARIOS:
         if code == DEFAULT_USAGE_SCENARIO:
             continue
-        path = _p(f"Annual_Usage_{code}.csv")
-        if os.path.exists(path):
+        path = find_input_file(data_dir, f"Annual_Usage_{code}", required=False)
+        if path:
             usage_scenarios[code] = _usage_rows(read_csv_kr(path, thousands=","))
 
     # ── PPA 단가 시나리오: 접미사 컬럼 (발전원별로 없으면 기본 *_M 폴백) ──

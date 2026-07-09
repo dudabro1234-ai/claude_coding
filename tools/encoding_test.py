@@ -13,6 +13,9 @@
   [3] 컬럼명 앞뒤 공백이 있어도 매칭됨
   [4] 인식 불가 파일은 "엑셀에서 CSV UTF-8로 다시 저장" 안내와 함께 실패
   [5] data/real_data 폴더가 있으면 서버가 환경변수 없이 자동 선택
+  [6] 엑셀 통합문서(.xlsx)로 저장한 입력 파일도 그대로 로드 (CSV와 혼용 가능)
+  [7] xlsx 내용인데 이름만 *.csv 인 파일도 자동 감지해 로드 (엑셀 '다른 이름으로 저장' 실수 대응)
+  [8] 파일 탐색 우선순위: 같은 이름의 .csv 가 없으면 .xlsx → .xls 순으로 찾음
 """
 
 import os
@@ -25,8 +28,10 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(THIS_DIR)
 sys.path.insert(0, BASE_DIR)
 
+import pandas as pd
+
 from core.config import SimulationParams
-from core.engine import load_data, company_total_cost, read_csv_kr
+from core.engine import load_data, company_total_cost, read_csv_kr, find_input_file
 
 SAMPLE_DIR = os.path.join(BASE_DIR, "data", "sample")
 FILES = ["Hourly_Data.csv", "Annual_Usage.csv", "Annual_PPA.csv", "Annual_Rate.csv"]
@@ -83,6 +88,33 @@ def main():
         except UnicodeError as e:
             assert "CSV UTF-8" in str(e), str(e)
         print("[4] 오류 안내 OK — 재저장 방법 포함")
+
+        # ── [6] 엑셀(.xlsx) 입력 — 연간 3종+worst 를 xlsx로, Hourly는 CSV (혼용) ──
+        d = os.path.join(tmp, "excel")
+        transcode_dir(d, "utf-8-sig")
+        for stem in ["Annual_Usage", "Annual_PPA", "Annual_Rate"]:
+            csv_path = os.path.join(d, stem + ".csv")
+            pd.read_csv(csv_path).to_excel(os.path.join(d, stem + ".xlsx"), index=False)
+            os.remove(csv_path)
+        assert abs(total(d) - base_total) < 1e-3
+        print("[6] 엑셀(.xlsx) OK — CSV와 혼용 로드, 결과 동일")
+
+        # ── [7] xlsx 내용인데 이름만 *.csv ──
+        d = os.path.join(tmp, "fakecsv")
+        transcode_dir(d, "utf-8-sig")
+        rate_csv = os.path.join(d, "Annual_Rate.csv")
+        pd.read_csv(rate_csv).to_excel(rate_csv + ".tmp.xlsx", index=False)
+        os.replace(rate_csv + ".tmp.xlsx", rate_csv)   # xlsx 바이트, 이름은 .csv
+        assert abs(total(d) - base_total) < 1e-3
+        print("[7] 이름만 .csv 인 엑셀 파일 OK — 매직 바이트로 감지")
+
+        # ── [8] 파일 탐색 우선순위 (.csv 없으면 .xlsx) ──
+        d = os.path.join(tmp, "find")
+        os.makedirs(d)
+        pd.DataFrame({"Year": [2026]}).to_excel(os.path.join(d, "Hourly_Data.xlsx"), index=False)
+        assert find_input_file(d, "Hourly_Data").endswith(".xlsx")
+        assert find_input_file(d, "Annual_PPA", required=False) is None
+        print("[8] 파일 탐색 OK — .csv → .xlsx 순 폴백")
 
     # ── [5] data/real_data 자동 인식 (서버 DATA_DIR 선택 로직) ──
     real_dir = os.path.join(BASE_DIR, "data", "real_data")

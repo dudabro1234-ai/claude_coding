@@ -57,7 +57,7 @@
 1. 시작 메뉴에서 **명령 프롬프트(cmd)** 실행.
 2. 아래 명령 입력 후 Enter:
    ```
-   pip install pandas numpy
+   pip install pandas numpy openpyxl
    ```
    (대시보드 서버 자체는 추가 패키지가 필요 없습니다. 엔진 계산에 pandas/numpy만 사용.)
 
@@ -101,8 +101,11 @@
    ```
    (환경변수가 `data/real_data`보다 우선)
 
-> **인코딩 자동 판별:** 엑셀에서 그냥 'CSV'로 저장한 파일(CP949)도, 'CSV UTF-8'(BOM 유무 무관)도
-> 그대로 로드됩니다. 컬럼명의 BOM·앞뒤 공백도 자동 정리됩니다.
+> **형식·인코딩 자동 판별:** 엑셀에서 그냥 'CSV'로 저장한 파일(CP949)도, 'CSV UTF-8'(BOM 유무 무관)도,
+> **엑셀 통합문서(.xlsx/.xls)** 도 그대로 로드됩니다 — 파일 내용으로 판별하므로 xlsx를 이름만
+> `.csv`로 저장한 파일도 동작합니다 (엑셀은 첫 번째 시트를 읽음, xlsx는 `pip install openpyxl` 필요).
+> 파일명은 `Hourly_Data.csv` 가 없으면 `Hourly_Data.xlsx` 를 찾는 식으로 확장자 폴백됩니다.
+> 컬럼명의 BOM·앞뒤 공백도 자동 정리됩니다.
 
 **입력 CSV 4종** (같은 폴더, 2026~2050년 모두 포함)
 

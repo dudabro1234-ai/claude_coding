@@ -1,4 +1,5 @@
 # 서버 배포용 최소 의존성 (server.py + core 엔진 + agent)
-# streamlit/xlsxwriter/openpyxl은 현재 코드에서 미사용 → 제외
+# streamlit/xlsxwriter는 현재 코드에서 미사용 → 제외
 pandas>=2.0
 numpy>=1.24
+openpyxl>=3.1        # 엑셀(xlsx) 입력 파일 지원
