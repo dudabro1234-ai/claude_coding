@@ -53,6 +53,11 @@ class MockLLMHandler(http.server.BaseHTTPRequestHandler):
 
         if "OK라고만" in user:
             content = "OK"
+        elif "문답 도우미" in system:  # chatbot
+            has_tracker = "누적 요청 이력" in system
+            has_detail = "최근 분석 상세" in system
+            content = (f"MOCK-ANSWER tracker={'Y' if has_tracker else 'N'} "
+                       f"detail={'Y' if has_detail else 'N'}")
         elif "구조화하세요" in system:  # extract
             if "FAIL_ME" in user:
                 content = "죄송합니다, 처리할 수 없습니다."  # JSON 아님 → 실패 유도
@@ -416,6 +421,92 @@ class TestDashboardServer(BaseWithServer):
                  reporter.OUTPUT_DIR, pipeline.PROCESSED_PATH) = saved
                 dashboard_server.STATE.update(
                     running=False, stage=None, result=None)
+
+
+class TestChatbot(BaseWithServer):
+    """챗봇: 컨텍스트 조립(현황·이력·수기값 포함) + 문답 + 웹 API."""
+
+    def _setup_data(self, tmp):
+        import chatbot
+        # tracker(수기 처리상태 포함) + 분석 상세 + factsheet 준비
+        tracker = os.path.join(tmp, "tracker.xlsx")
+        reporter.append_tracker([TestTracker.RESULT], tracker)
+        from openpyxl import load_workbook
+        wb = load_workbook(tracker)
+        wb.active.cell(row=2, column=11, value="발송완료")
+        wb.save(tracker)
+
+        analyzed = os.path.join(tmp, "analyzed")
+        os.makedirs(analyzed)
+        detail = json.loads(json.dumps(TestTracker.RESULT))
+        detail["summary"] = "Scope 1 및 LTIR 데이터 제출 요청."
+        detail["risks"] = [{"target": "R2", "severity": "높음",
+                            "description": "공개 범위 확대 우려",
+                            "mitigation": "사전 협의"}]
+        detail["dept_requests"] = [{"owner_dept": "환경안전팀", "body": "..."}]
+        with open(os.path.join(analyzed, "m001.json"), "w",
+                  encoding="utf-8") as f:
+            json.dump(detail, f, ensure_ascii=False)
+
+        data = os.path.join(tmp, "data")
+        os.makedirs(data)
+        xlsx = os.path.join(data, "factsheet.xlsx")
+        md = os.path.join(data, "factsheet.md")
+        make_sample_factsheet.make(xlsx)
+        xlsx_to_md.convert(xlsx, md)
+
+        saved = (chatbot.TRACKER_PATH, chatbot.ANALYZED_DIR,
+                 chatbot.FACTSHEET_MD)
+        chatbot.TRACKER_PATH, chatbot.ANALYZED_DIR, chatbot.FACTSHEET_MD = \
+            tracker, analyzed, md
+        return chatbot, saved
+
+    def test_context_and_chat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            chatbot, saved = self._setup_data(tmp)
+            try:
+                ctx = chatbot.build_context(CONFIG)
+                self.assertIn("Scope 1 제출", ctx)          # 이력(요구내용)
+                self.assertIn("처리상태(수기): 발송완료", ctx)  # 수기 현황
+                self.assertIn("공개 범위 확대 우려", ctx)      # 리스크
+                self.assertIn("E-GHG-S1", ctx)              # factsheet
+                self.assertNotIn("E-GHG-S3", ctx)           # C4: 대외비 미포함
+
+                reply = chatbot.chat("Apple 건 진행상황 알려줘",
+                                     history=[{"role": "user", "content": "hi"},
+                                              {"role": "assistant",
+                                               "content": "안녕하세요"}],
+                                     config=CONFIG)
+                self.assertEqual(reply, "MOCK-ANSWER tracker=Y detail=Y")
+            finally:
+                (chatbot.TRACKER_PATH, chatbot.ANALYZED_DIR,
+                 chatbot.FACTSHEET_MD) = saved
+
+    def test_chat_api_endpoint(self):
+        import urllib.request
+        import dashboard_server
+        with tempfile.TemporaryDirectory() as tmp:
+            chatbot, saved = self._setup_data(tmp)
+            web = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), dashboard_server.Handler)
+            threading.Thread(target=web.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{web.server_address[1]}"
+            try:
+                with urllib.request.urlopen(base + "/chat") as r:
+                    self.assertIn("대응 현황 문답", r.read().decode("utf-8"))
+                req = urllib.request.Request(
+                    base + "/chat/api", method="POST",
+                    data=json.dumps({"message": "현황 알려줘",
+                                     "history": []}).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req) as r:
+                    data = json.loads(r.read().decode("utf-8"))
+                self.assertTrue(data["ok"], data)
+                self.assertTrue(data["reply"].startswith("MOCK-ANSWER"))
+            finally:
+                web.shutdown()
+                (chatbot.TRACKER_PATH, chatbot.ANALYZED_DIR,
+                 chatbot.FACTSHEET_MD) = saved
 
 
 class TestHardConstraints(unittest.TestCase):

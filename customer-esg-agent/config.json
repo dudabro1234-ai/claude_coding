@@ -21,6 +21,7 @@
     "normal_days": 30
   },
   "llm": {
-    "max_body_chars": 12000
+    "max_body_chars": 12000,
+    "chat_max_context_chars": 24000
   }
 }
