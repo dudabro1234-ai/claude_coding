@@ -453,6 +453,60 @@ def build_html(results, run_date=None):
   .risk-target {{ font-family: Consolas, monospace; font-size: 12px;
                  color: var(--sub); }}
   .risk-mit {{ color: #065f46; font-size: 12px; margin-top: 3px; }}
+
+  /* ── 우측 문답 사이드바 ── */
+  #chat-fab {{ position: fixed; right: 24px; bottom: 24px; z-index: 60;
+    width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer;
+    font-size: 24px; color: #052e22;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    box-shadow: 0 8px 24px rgba(15,23,42,.28); transition: transform .12s; }}
+  #chat-fab:hover {{ transform: scale(1.06); }}
+  body.chat-open #chat-fab {{ display: none; }}
+  #chat-panel {{ position: fixed; top: 0; right: 0; width: 400px; height: 100vh;
+    max-width: 92vw; background: var(--card); border-left: 1px solid var(--line);
+    box-shadow: -12px 0 40px rgba(15,23,42,.15); z-index: 55;
+    display: flex; flex-direction: column;
+    transform: translateX(100%); transition: transform .22s ease; }}
+  body.chat-open #chat-panel {{ transform: translateX(0); }}
+  @media (min-width: 1500px) {{
+    body.chat-open main {{ margin-right: 400px; }}
+  }}
+  .chat-head {{ padding: 14px 18px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 10px; }}
+  .chat-head b {{ font-size: 14px; }}
+  .chat-head .chat-sub {{ font-size: 11px; color: var(--sub); }}
+  .chat-close {{ margin-left: auto; border: 0; background: none;
+    font-size: 20px; cursor: pointer; color: var(--sub); }}
+  .chat-close:hover {{ color: var(--text); }}
+  #chat-log {{ flex: 1; overflow-y: auto; padding: 14px; }}
+  .chat-msg {{ display: flex; margin-bottom: 10px; }}
+  .chat-msg.user {{ justify-content: flex-end; }}
+  .chat-bubble {{ max-width: 85%; padding: 9px 13px; border-radius: 12px;
+    font-size: 13px; line-height: 1.65; white-space: pre-wrap;
+    word-break: break-word; }}
+  .chat-msg.user .chat-bubble {{ background: #d1fae5; color: #064e3b;
+    border-bottom-right-radius: 4px; }}
+  .chat-msg.bot .chat-bubble {{ background: #f1f5f9;
+    border: 1px solid var(--line); border-bottom-left-radius: 4px; }}
+  .chat-msg.bot .chat-bubble.err {{ border-color: #fca5a5; color: #991b1b; }}
+  .chat-hint {{ font-size: 11px; color: var(--sub); text-align: center;
+    margin: 4px 0 12px; line-height: 1.6; }}
+  .chat-chips {{ display: flex; flex-wrap: wrap; gap: 6px;
+    justify-content: center; margin-bottom: 8px; }}
+  .chat-chip {{ border: 1px solid var(--line); background: #fff;
+    color: var(--sub); border-radius: 999px; padding: 5px 11px;
+    font-size: 11px; cursor: pointer; font-family: inherit; }}
+  .chat-chip:hover {{ color: var(--text); border-color: var(--accent); }}
+  #chat-form {{ display: flex; gap: 8px; padding: 12px 14px;
+    border-top: 1px solid var(--line); }}
+  #chat-q {{ flex: 1; padding: 10px 13px; border-radius: 10px; font-size: 13px;
+    border: 1px solid var(--line); font-family: inherit; }}
+  #chat-q:focus {{ outline: none; border-color: var(--accent); }}
+  #chat-send {{ padding: 10px 16px; border: 0; border-radius: 10px;
+    font-size: 13px; font-weight: 700; cursor: pointer; font-family: inherit;
+    background: linear-gradient(90deg, var(--accent), var(--accent2));
+    color: #052e22; }}
+  #chat-send:disabled {{ opacity: .45; cursor: not-allowed; }}
 </style>
 </head>
 <body>
@@ -517,6 +571,30 @@ def build_html(results, run_date=None):
     {cards or "<p>표시할 메일이 없습니다.</p>"}
   </div>
 </main>
+
+<button id="chat-fab" onclick="toggleChat()" title="대응 현황 문답">💬</button>
+<aside id="chat-panel">
+  <div class="chat-head">
+    <b>💬 대응 현황 문답</b>
+    <span class="chat-sub">사내 LLM · 조회 전용</span>
+    <button class="chat-close" onclick="toggleChat()">✕</button>
+  </div>
+  <div id="chat-log">
+    <div class="chat-hint">분석 이력·관리대장(수기 처리상태)·공개 Factsheet를
+      근거로 답합니다.<br>데이터에 없는 내용은 답하지 않습니다.</div>
+    <div class="chat-chips">
+      <button class="chat-chip" onclick="askChip(this)">마감 임박 요청은?</button>
+      <button class="chat-chip" onclick="askChip(this)">처리 안 된 요청 정리해줘</button>
+      <button class="chat-chip" onclick="askChip(this)">고위험 리스크 건은?</button>
+      <button class="chat-chip" onclick="askChip(this)">Scope 1 요청 이력은?</button>
+    </div>
+  </div>
+  <form id="chat-form" onsubmit="return chatSubmit(event)">
+    <input id="chat-q" placeholder="예: OO 고객 건 진행상황은?" autocomplete="off">
+    <button id="chat-send" type="submit">전송</button>
+  </form>
+</aside>
+
 <script>
 var currentList = [];   // 필터 적용된 mail_id 순서
 var currentIdx = -1;
@@ -620,6 +698,77 @@ function copyDraft(ev, btn) {{
   if (navigator.clipboard && navigator.clipboard.writeText) {{
     navigator.clipboard.writeText(text).then(done, function() {{ fallback(); }});
   }} else {{ fallback(); }}
+}}
+
+/* ── 우측 문답 사이드바 ── */
+var chatHistory = [];
+var chatServed = (location.protocol !== "file:");  // 서버로 열렸는가
+
+function toggleChat() {{
+  var opened = document.body.classList.toggle("chat-open");
+  if (opened && !chatServed && !document.getElementById("chat-offline")) {{
+    var b = chatAdd("bot",
+      "이 리포트가 파일로 직접 열려 있어 챗봇 서버에 연결할 수 없습니다.\\n" +
+      "run_dashboard.bat 실행 후 열리는 화면에서 [검토 대시보드]로 들어오면 " +
+      "여기서 바로 문답할 수 있습니다.", true);
+    b.id = "chat-offline";
+    document.getElementById("chat-q").disabled = true;
+    document.getElementById("chat-send").disabled = true;
+  }}
+  if (opened) document.getElementById("chat-q").focus();
+}}
+
+function chatAdd(role, text, err) {{
+  var log = document.getElementById("chat-log");
+  var div = document.createElement("div");
+  div.className = "chat-msg " + role;
+  var b = document.createElement("div");
+  b.className = "chat-bubble" + (err ? " err" : "");
+  b.textContent = text;
+  div.appendChild(b);
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return b;
+}}
+
+function askChip(btn) {{
+  document.getElementById("chat-q").value = btn.textContent;
+  chatSend();
+}}
+function chatSubmit(ev) {{ ev.preventDefault(); chatSend(); return false; }}
+
+function chatSend() {{
+  if (!chatServed) return;
+  var input = document.getElementById("chat-q");
+  var text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  document.getElementById("chat-send").disabled = true;
+  chatAdd("user", text);
+  var wait = chatAdd("bot", "답변 작성 중…");
+  fetch("/chat/api", {{ method: "POST",
+    headers: {{"Content-Type": "application/json"}},
+    body: JSON.stringify({{ message: text, history: chatHistory }}) }})
+  .then(function(res) {{ return res.json(); }})
+  .then(function(data) {{
+    if (data.ok) {{
+      wait.textContent = data.reply;
+      chatHistory.push({{ role: "user", content: text }});
+      chatHistory.push({{ role: "assistant", content: data.reply }});
+      if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
+    }} else {{
+      wait.classList.add("err");
+      wait.textContent = data.error || "오류가 발생했습니다.";
+    }}
+  }})
+  .catch(function(e) {{
+    wait.classList.add("err");
+    wait.textContent = "서버 연결 오류: " + e;
+  }})
+  .then(function() {{
+    document.getElementById("chat-send").disabled = false;
+    input.focus();
+  }});
 }}
 </script>
 </body>

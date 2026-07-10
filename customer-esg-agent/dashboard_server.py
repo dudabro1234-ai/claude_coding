@@ -148,7 +148,7 @@ CONTROL_PAGE = """<!DOCTYPE html>
     <div class="stage" id="stage"></div>
   </div>
   <div class="result" id="result"></div>
-  <a class="chat-link" href="/chat">💬 대응 현황 문답 (챗봇) →</a>
+  <a class="chat-link" href="/report" target="_blank">📊 최근 검토 대시보드 열기 — 우측 💬 버튼으로 현황 문답</a>
 </div>
 <div class="foot">사내 LLM 전용 · 원본 메일 미변경 · 자동 발송 없음</div>
 <script>
@@ -205,140 +205,6 @@ async function poll() {
 </html>"""
 
 
-CHAT_PAGE = """<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<title>ESG 대응 현황 문답</title>
-<style>
-  :root {
-    --bg: #0f172a; --panel: #1e293b; --line: #334155;
-    --text: #e2e8f0; --sub: #94a3b8; --accent: #34d399; --accent2: #22d3ee;
-  }
-  * { box-sizing: border-box; }
-  html, body { height: 100%; }
-  body { margin: 0; font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
-         background: var(--bg); color: var(--text);
-         display: flex; flex-direction: column; }
-  header { padding: 14px 22px; border-bottom: 1px solid var(--line);
-           display: flex; align-items: center; gap: 14px; }
-  header h1 { margin: 0; font-size: 16px;
-    background: linear-gradient(90deg, var(--accent), var(--accent2));
-    -webkit-background-clip: text; background-clip: text; color: transparent; }
-  header a { color: var(--sub); font-size: 12px; text-decoration: none;
-            margin-left: auto; }
-  header a:hover { color: var(--text); }
-  #log { flex: 1; overflow-y: auto; padding: 22px;
-         max-width: 860px; width: 100%; margin: 0 auto; }
-  .msg { display: flex; margin-bottom: 14px; }
-  .msg.user { justify-content: flex-end; }
-  .bubble { max-width: 78%; padding: 11px 16px; border-radius: 14px;
-           font-size: 14px; line-height: 1.7; white-space: pre-wrap;
-           word-break: break-word; }
-  .user .bubble { background: linear-gradient(120deg, #065f46, #0e7490);
-                 border-bottom-right-radius: 4px; }
-  .bot .bubble { background: var(--panel); border: 1px solid var(--line);
-                border-bottom-left-radius: 4px; }
-  .bot .bubble.err { border-color: #f87171; color: #fca5a5; }
-  .hint { color: var(--sub); font-size: 12px; text-align: center;
-         margin: 8px 0 16px; }
-  .chips { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
-          margin-bottom: 10px; }
-  .chip { border: 1px solid var(--line); background: var(--panel);
-         color: var(--sub); border-radius: 999px; padding: 7px 14px;
-         font-size: 12px; cursor: pointer; font-family: inherit; }
-  .chip:hover { color: var(--text); border-color: var(--accent); }
-  form { display: flex; gap: 10px; padding: 16px 22px 22px;
-        max-width: 860px; width: 100%; margin: 0 auto; }
-  input { flex: 1; padding: 13px 16px; border-radius: 12px; font-size: 14px;
-         border: 1px solid var(--line); background: #0b1220;
-         color: var(--text); font-family: inherit; }
-  input:focus { outline: none; border-color: var(--accent); }
-  button { padding: 13px 24px; border: 0; border-radius: 12px; font-size: 14px;
-          font-weight: 700; cursor: pointer; font-family: inherit;
-          background: linear-gradient(90deg, var(--accent), var(--accent2));
-          color: #052e22; }
-  button:disabled { opacity: .45; cursor: not-allowed; }
-  .typing { color: var(--sub); font-size: 13px; }
-</style>
-</head>
-<body>
-<header>
-  <h1>💬 ESG 대응 현황 문답</h1>
-  <a href="/">← 분석 실행 화면</a>
-</header>
-<div id="log">
-  <div class="hint">분석 이력·관리대장(수기 처리상태 포함)·공개 Factsheet를
-    근거로 답합니다. 데이터에 없는 내용은 답하지 않습니다.<br>
-    조회 전용 도우미이며 메일 발송 등 어떤 동작도 수행하지 않습니다.</div>
-  <div class="chips">
-    <button class="chip" onclick="ask(this.textContent)">이번 주 마감 임박 요청은?</button>
-    <button class="chip" onclick="ask(this.textContent)">아직 처리 안 된 요청 정리해줘</button>
-    <button class="chip" onclick="ask(this.textContent)">고위험 리스크가 있는 건은 뭐야?</button>
-    <button class="chip" onclick="ask(this.textContent)">Scope 1 배출량 요청 이력 보여줘</button>
-  </div>
-</div>
-<form onsubmit="return submitMsg(event)">
-  <input id="q" placeholder="예: OO 고객이 요청한 항목들 진행상황 알려줘"
-         autocomplete="off" autofocus>
-  <button id="send" type="submit">전송</button>
-</form>
-<script>
-var chatHistory = [];
-
-function add(role, text, err) {
-  var log = document.getElementById("log");
-  var div = document.createElement("div");
-  div.className = "msg " + role;
-  var b = document.createElement("div");
-  b.className = "bubble" + (err ? " err" : "");
-  b.textContent = text;
-  div.appendChild(b);
-  log.appendChild(div);
-  log.scrollTop = log.scrollHeight;
-  return b;
-}
-
-function ask(text) { document.getElementById("q").value = text; sendMsg(); }
-function submitMsg(ev) { ev.preventDefault(); sendMsg(); return false; }
-
-async function sendMsg() {
-  var input = document.getElementById("q");
-  var text = input.value.trim();
-  if (!text) return;
-  input.value = "";
-  document.getElementById("send").disabled = true;
-  add("user", text);
-  var wait = add("bot", "답변 작성 중…");
-  wait.classList.add("typing");
-  try {
-    var res = await fetch("/chat/api", { method: "POST",
-      headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({ message: text, history: chatHistory }) });
-    var data = await res.json();
-    wait.classList.remove("typing");
-    if (data.ok) {
-      wait.textContent = data.reply;
-      chatHistory.push({ role: "user", content: text });
-      chatHistory.push({ role: "assistant", content: data.reply });
-      if (chatHistory.length > 20) chatHistory = chatHistory.slice(-20);
-    } else {
-      wait.classList.add("err");
-      wait.textContent = data.error || "오류가 발생했습니다.";
-    }
-  } catch (e) {
-    wait.classList.remove("typing");
-    wait.classList.add("err");
-    wait.textContent = "서버 연결 오류: " + e;
-  }
-  document.getElementById("send").disabled = false;
-  input.focus();
-}
-</script>
-</body>
-</html>"""
-
-
 class Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         log.debug(fmt, *args)
@@ -355,7 +221,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if self.path == "/" or self.path.startswith("/index"):
             self._send(200, CONTROL_PAGE)
         elif self.path == "/chat":
-            self._send(200, CHAT_PAGE)
+            # 문답 UI는 검토 대시보드 우측 사이드바로 통합되었다.
+            self.send_response(302)
+            self.send_header("Location", "/report")
+            self.end_headers()
         elif self.path == "/status":
             with STATE_LOCK:
                 snap = dict(STATE)

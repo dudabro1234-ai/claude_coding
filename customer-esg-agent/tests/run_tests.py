@@ -349,6 +349,10 @@ class TestHTML(unittest.TestCase):
         self.assertIn('id="card-m001"', html_text)       # 상세 카드
         self.assertIn("f-customer", html_text)           # 고객사 필터
         self.assertIn("showDetail", html_text)
+        # 우측 문답 사이드바 (서버로 열렸을 때 /chat/api 사용)
+        self.assertIn('id="chat-panel"', html_text)
+        self.assertIn('id="chat-fab"', html_text)
+        self.assertIn("/chat/api", html_text)
 
 
 class TestDashboardServer(BaseWithServer):
@@ -492,8 +496,6 @@ class TestChatbot(BaseWithServer):
             threading.Thread(target=web.serve_forever, daemon=True).start()
             base = f"http://127.0.0.1:{web.server_address[1]}"
             try:
-                with urllib.request.urlopen(base + "/chat") as r:
-                    self.assertIn("대응 현황 문답", r.read().decode("utf-8"))
                 req = urllib.request.Request(
                     base + "/chat/api", method="POST",
                     data=json.dumps({"message": "현황 알려줘",
