@@ -338,6 +338,12 @@ class TestHTML(unittest.TestCase):
         self.assertIn("보고서 p.42", html_text)       # 보유정보 출처
         self.assertIn("공개 범위 확대 우려", html_text)  # 리스크
         self.assertIn("④ 답변 리스크 검토", html_text)
+        # 목록 화면: 전체 요청 표 + 행→상세 연결 + 필터
+        self.assertIn("전체 요청 목록", html_text)
+        self.assertIn('data-id="m001"', html_text)       # 표 행
+        self.assertIn('id="card-m001"', html_text)       # 상세 카드
+        self.assertIn("f-customer", html_text)           # 고객사 필터
+        self.assertIn("showDetail", html_text)
 
 
 class TestDashboardServer(BaseWithServer):

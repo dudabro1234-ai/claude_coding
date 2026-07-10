@@ -3,8 +3,8 @@
 
 작업지시서 §3 ③, §6:
 - output/report_YYYYMMDD.html : 단일 파일 검토 대시보드 (외부 CDN 미참조)
-    요구사항별로 「어떤 요청이 언제 왔고 → 보유 정보는 무엇이며 →
-    어떤 내용으로 답변하고 → 어떤 리스크가 있는지」 흐름으로 표시한다.
+    첫 화면 = 조회기간 내 전체 요청건 표 (필터·정렬·검색).
+    행 클릭 = 해당 건 상세 (요청내용 → 보유정보 → 초안 → 리스크 검토).
 - output/tracker.xlsx         : 누적 관리대장 (append 전용, 수기 열 보존)
 - Outlook 임시보관함 초안 저장 (C1: 자동 발송 금지 — 저장만 수행)
 """
@@ -36,6 +36,8 @@ SEVERITY_STYLE = {
     "중간": ("#92400e", "#fef3c7"),
     "낮음": ("#065f46", "#d1fae5"),
 }
+URGENCY_RANK = {"긴급": 0, "보통": 1, "낮음": 2}
+SEVERITY_RANK = {"높음": 0, "중간": 1, "낮음": 2}
 
 TRACKER_COLUMNS = ["수신일", "고객사", "요청유형", "프레임워크", "마감일", "긴급도",
                    "req_id", "요구내용", "상태", "담당부서",
@@ -165,21 +167,20 @@ def _collapsible(title, body, uid, open_=False):
 
 
 def _mail_card(m):
+    """상세 화면 카드: ①·② 요구사항/보유정보 → ③ 초안 → ④ 리스크."""
     is_error = m.get("status") == "ERROR"
     received = str(m.get("received_at", ""))[:16].replace("T", " ")
 
-    # ① 요청/② 보유정보 (요구사항별)
     req_blocks = "".join(_requirement_block(r)
                          for r in m.get("requirements", []))
     if not req_blocks:
         note = _esc(m.get("error", "요구사항이 추출되지 않았습니다."))
         req_blocks = f"<div class='nodata'>{note}</div>"
 
-    # ③ 초안
     drafts_html = ""
     if m.get("reply_draft"):
         drafts_html += _collapsible("고객 답변 초안", m["reply_draft"],
-                                    f"{m['mail_id']}-reply")
+                                    f"{m['mail_id']}-reply", open_=True)
     for i, dr in enumerate(m.get("dept_requests", [])):
         drafts_html += _collapsible(
             f"부서요청 초안 → {_esc(dr.get('owner_dept', '미지정'))}",
@@ -194,7 +195,7 @@ def _mail_card(m):
                         f"✉ 원본 메일 열기</a>")
 
     return f"""
-<div class="card{' card-error' if is_error else ''}">
+<div class="card{' card-error' if is_error else ''}" id="card-{_esc(m['mail_id'])}">
   <div class="card-head">
     <div class="card-title">
       <span class="customer">{_esc(m.get('customer'))}</span>
@@ -219,28 +220,97 @@ def _mail_card(m):
 </div>"""
 
 
+def _status_chips(m):
+    """대응현황 요약 칩: 즉답 n · 부서협조 n · ERROR."""
+    if m.get("status") == "ERROR":
+        return _pill("분석실패", STATUS_STYLE, "ERROR")
+    reqs = m.get("requirements", [])
+    parts = []
+    n = sum(1 for r in reqs if r.get("status") == "답변가능")
+    if n:
+        parts.append(_pill(f"즉답 {n}", STATUS_STYLE, "답변가능"))
+    n = sum(1 for r in reqs if r.get("status") == "부분가능")
+    if n:
+        parts.append(_pill(f"부분 {n}", STATUS_STYLE, "부분가능"))
+    n = sum(1 for r in reqs if r.get("status") == "데이터없음")
+    if n:
+        parts.append(_pill(f"부서협조 {n}", STATUS_STYLE, "데이터없음"))
+    return " ".join(parts) or "<span class='dim'>요구사항 없음</span>"
+
+
+def _max_risk(m):
+    risks = m.get("risks") or []
+    if not risks:
+        return None
+    return min(risks, key=lambda r: SEVERITY_RANK[r["severity"]])["severity"]
+
+
+def _overview_row(m):
+    received = str(m.get("received_at", ""))[:10]
+    deadline = m.get("deadline") or ""
+    max_risk = _max_risk(m)
+    searchable = " ".join(str(m.get(k, "")) for k in
+                          ("customer", "subject", "summary", "sender",
+                           "request_type", "framework")).lower()
+    flags = []
+    if m.get("status") == "ERROR":
+        flags.append("error")
+    for r in m.get("requirements", []):
+        if r.get("status") == "답변가능":
+            flags.append("answerable")
+        elif r.get("status") == "데이터없음":
+            flags.append("dept")
+    return f"""
+<tr class="ov-row" data-id="{_esc(m['mail_id'])}"
+    onclick="showDetail(this.dataset.id)"
+    data-customer="{_esc(m.get('customer'))}"
+    data-urgency="{_esc(m.get('urgency'))}"
+    data-flags="{','.join(sorted(set(flags)))}"
+    data-text="{_esc(searchable)}">
+  <td data-v="{_esc(received)}">{_esc(received)}</td>
+  <td data-v="{_esc(m.get('customer'))}"><a class="cust-link"
+      onclick="filterCustomer(event, this)">{_esc(m.get('customer'))}</a></td>
+  <td class="ov-subject" data-v="{_esc(m.get('subject'))}">{_esc(m.get('subject'))}</td>
+  <td data-v="{_esc(m.get('request_type'))}">{_esc(m.get('request_type'))}<br>
+      <span class="dim">{_esc(m.get('framework'))}</span></td>
+  <td data-v="{_esc(deadline or '9999-12-31')}">{_esc(deadline or '미상')}
+      {_dday(deadline)}</td>
+  <td data-v="{URGENCY_RANK.get(m.get('urgency'), 2)}">
+      {_pill(m.get('urgency'), URGENCY_STYLE)}</td>
+  <td data-v="{len(m.get('requirements', []))}">{_status_chips(m)}</td>
+  <td data-v="{SEVERITY_RANK.get(max_risk, 3)}">
+      {_pill(max_risk, SEVERITY_STYLE) if max_risk else "<span class='dim'>—</span>"}</td>
+  <td class="ov-arrow">›</td>
+</tr>"""
+
+
 def build_html(results, run_date=None):
-    """검토 대시보드 HTML 문자열을 생성한다 (단일 파일, 외부 참조 없음)."""
+    """검토 대시보드 HTML 문자열을 생성한다 (단일 파일, 외부 참조 없음).
+
+    구조: [목록 화면] 전체 요청건 표 (필터·정렬·검색)
+          → 행 클릭 → [상세 화면] 요청내용·보유정보·초안·리스크 + 목록 복귀.
+    """
     run_date = run_date or datetime.date.today()
     kpi_html = "".join(
         f"<div class='kpi' style='--accent:{color}'>"
         f"<div class='kpi-num'>{v}</div><div class='kpi-label'>{k}</div></div>"
         for k, v, color in _kpi(results))
 
-    order = {"긴급": 0, "보통": 1, "낮음": 2}
-    by_customer = {}
-    for m in results:
-        by_customer.setdefault(m.get("customer", "미분류"), []).append(m)
+    # 기본 정렬: 긴급도 → 마감 임박 → 최신 수신
+    ordered = sorted(results, key=lambda m: (
+        URGENCY_RANK.get(m.get("urgency"), 2),
+        m.get("deadline") or "9999-12-31",
+        m.get("received_at", "")))
+    rows = "".join(_overview_row(m) for m in ordered)
+    cards = "".join(_mail_card(m) for m in ordered)
 
-    sections = ""
-    for customer in sorted(by_customer,
-                           key=lambda c: min(order.get(m.get("urgency"), 2)
-                                             for m in by_customer[c])):
-        mails = sorted(by_customer[customer],
-                       key=lambda m: order.get(m.get("urgency"), 2))
-        cards = "".join(_mail_card(m) for m in mails)
-        sections += (f"<h2>{_esc(customer)} "
-                     f"<span class='count'>{len(mails)}건</span></h2>{cards}")
+    received_dates = [str(m.get("received_at", ""))[:10]
+                      for m in results if m.get("received_at")]
+    period = (f"{min(received_dates)} ~ {max(received_dates)}"
+              if received_dates else "-")
+    customers = sorted({m.get("customer", "미분류") for m in results})
+    customer_opts = "".join(f"<option value='{_esc(c)}'>{_esc(c)}</option>"
+                            for c in customers)
 
     return f"""<!DOCTYPE html>
 <html lang="ko">
@@ -254,19 +324,20 @@ def build_html(results, run_date=None):
     --accent: #10b981; --accent2: #0ea5e9;
   }}
   * {{ box-sizing: border-box; }}
+  html {{ background: var(--bg); }}
   body {{ margin: 0; font-family: 'Malgun Gothic', 'Segoe UI', sans-serif;
-         background: var(--bg); color: var(--text); }}
+         background: var(--bg); color: var(--text); min-height: 100vh; }}
   header {{ background: linear-gradient(120deg, #0f172a, #1e3a5f 60%, #134e4a);
-           color: #e2e8f0; padding: 26px 32px; }}
+           color: #e2e8f0; padding: 24px 32px; }}
   header h1 {{ margin: 0; font-size: 21px; letter-spacing: -0.3px; }}
   header h1 small {{ font-weight: 400; color: #94a3b8; margin-left: 8px; }}
   header .warn {{ display: inline-block; margin-top: 10px; font-size: 12px;
     color: #fbbf24; background: rgba(251,191,36,.12);
     border: 1px solid rgba(251,191,36,.4); border-radius: 8px;
     padding: 5px 12px; }}
-  main {{ max-width: 1180px; margin: 0 auto; padding: 22px 32px 70px; }}
+  main {{ max-width: 1240px; margin: 0 auto; padding: 22px 32px 70px; }}
   .kpi-bar {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-             gap: 12px; margin: 18px 0 8px; }}
+             gap: 12px; margin: 4px 0 18px; }}
   .kpi {{ background: var(--card); border: 1px solid var(--line);
          border-radius: 14px; padding: 14px 18px; position: relative;
          overflow: hidden; box-shadow: 0 1px 3px rgba(15,23,42,.06); }}
@@ -274,11 +345,55 @@ def build_html(results, run_date=None):
                  width: 4px; background: var(--accent); }}
   .kpi-num {{ font-size: 28px; font-weight: 800; color: var(--accent); }}
   .kpi-label {{ font-size: 12px; color: var(--sub); margin-top: 2px; }}
-  h2 {{ margin: 30px 0 12px; font-size: 17px; }}
-  h2 .count {{ font-size: 13px; color: var(--sub); font-weight: 400; }}
-  .card {{ background: var(--card); border: 1px solid var(--line);
-          border-radius: 16px; padding: 20px 24px; margin-bottom: 18px;
+  .dim {{ color: #94a3b8; font-size: 12px; }}
+
+  /* ── 목록 화면 ── */
+  .toolbar {{ display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+             margin-bottom: 12px; }}
+  .toolbar .title {{ font-size: 15px; font-weight: 800; margin-right: auto; }}
+  .toolbar .title .period {{ font-weight: 400; font-size: 12px;
+                            color: var(--sub); margin-left: 8px; }}
+  .toolbar select, .toolbar input {{ padding: 8px 12px; border-radius: 10px;
+    border: 1px solid var(--line); background: #fff; font-size: 13px;
+    color: var(--text); font-family: inherit; }}
+  .toolbar input {{ width: 200px; }}
+  .table-wrap {{ background: var(--card); border: 1px solid var(--line);
+                border-radius: 16px; overflow: auto;
+                box-shadow: 0 2px 8px rgba(15,23,42,.06); }}
+  table.ov {{ width: 100%; border-collapse: collapse; font-size: 13px;
+             min-width: 900px; }}
+  table.ov th {{ position: sticky; top: 0; background: #f8fafc;
+    color: var(--sub); font-size: 11px; text-transform: uppercase;
+    letter-spacing: .05em; text-align: left; padding: 10px 12px;
+    border-bottom: 2px solid var(--line); cursor: pointer;
+    user-select: none; white-space: nowrap; }}
+  table.ov th:hover {{ color: var(--text); }}
+  table.ov th .arrow {{ font-size: 10px; }}
+  table.ov td {{ padding: 10px 12px; border-bottom: 1px solid var(--line);
+                vertical-align: top; }}
+  tr.ov-row {{ cursor: pointer; transition: background .12s; }}
+  tr.ov-row:hover {{ background: #f0fdfa; }}
+  .ov-subject {{ max-width: 340px; font-weight: 600; color: #1e293b; }}
+  .ov-arrow {{ color: #94a3b8; font-size: 18px; font-weight: 700; }}
+  .cust-link {{ color: var(--accent2); font-weight: 700; cursor: pointer; }}
+  .cust-link:hover {{ text-decoration: underline; }}
+  .empty-row td {{ text-align: center; color: var(--sub); padding: 30px; }}
+
+  /* ── 상세 화면 ── */
+  #view-detail {{ display: none; }}
+  .back-bar {{ display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }}
+  .back-btn {{ border: 1px solid var(--line); background: #fff; cursor: pointer;
+    border-radius: 10px; padding: 9px 18px; font-size: 13px; font-weight: 700;
+    font-family: inherit; }}
+  .back-btn:hover {{ background: #f1f5f9; }}
+  .nav-btn {{ border: 1px solid var(--line); background: #fff; cursor: pointer;
+    border-radius: 10px; padding: 9px 14px; font-size: 13px; font-family: inherit; }}
+  .nav-btn:disabled {{ opacity: .4; cursor: default; }}
+  .nav-pos {{ font-size: 12px; color: var(--sub); }}
+  .card {{ display: none; background: var(--card); border: 1px solid var(--line);
+          border-radius: 16px; padding: 20px 24px;
           box-shadow: 0 2px 8px rgba(15,23,42,.06); }}
+  .card.active {{ display: block; }}
   .card-error {{ border-color: #fca5a5; }}
   .card-head {{ display: flex; justify-content: space-between; gap: 10px;
                flex-wrap: wrap; align-items: center; }}
@@ -286,9 +401,10 @@ def build_html(results, run_date=None):
   .customer {{ font-weight: 800; font-size: 16px; }}
   .subject {{ font-size: 14px; color: #334155; margin-top: 6px; font-weight: 600; }}
   .pill {{ border-radius: 999px; padding: 3px 12px; font-size: 12px;
-          font-weight: 700; white-space: nowrap; }}
+          font-weight: 700; white-space: nowrap; display: inline-block; }}
   .dday {{ font-size: 12px; font-weight: 800; color: #0369a1;
-          background: #e0f2fe; border-radius: 999px; padding: 3px 12px; }}
+          background: #e0f2fe; border-radius: 999px; padding: 3px 12px;
+          white-space: nowrap; display: inline-block; }}
   .dday.hot {{ color: #991b1b; background: #fee2e2; }}
   .dday.over {{ color: #fff; background: #991b1b; }}
   .deadline {{ font-size: 12px; color: var(--sub); }}
@@ -347,9 +463,149 @@ def build_html(results, run_date=None):
 </header>
 <main>
   <div class="kpi-bar">{kpi_html}</div>
-  {sections or "<p>표시할 메일이 없습니다.</p>"}
+
+  <div id="view-list">
+    <div class="toolbar">
+      <div class="title">전체 요청 목록
+        <span class="period">수신 {period} · {len(results)}건</span></div>
+      <select id="f-customer" onchange="applyFilters()">
+        <option value="">고객사: 전체</option>{customer_opts}
+      </select>
+      <select id="f-urgency" onchange="applyFilters()">
+        <option value="">긴급도: 전체</option>
+        <option value="긴급">긴급</option>
+        <option value="보통">보통</option>
+        <option value="낮음">낮음</option>
+      </select>
+      <select id="f-flag" onchange="applyFilters()">
+        <option value="">현황: 전체</option>
+        <option value="answerable">즉답 가능 포함</option>
+        <option value="dept">부서협조 필요 포함</option>
+        <option value="error">분석 실패</option>
+      </select>
+      <input id="f-text" type="search" placeholder="제목·내용 검색…"
+             oninput="applyFilters()">
+    </div>
+    <div class="table-wrap">
+      <table class="ov">
+        <thead><tr>
+          <th onclick="sortBy(this, 0)">수신일 <span class="arrow"></span></th>
+          <th onclick="sortBy(this, 1)">고객사 <span class="arrow"></span></th>
+          <th onclick="sortBy(this, 2)">제목 <span class="arrow"></span></th>
+          <th onclick="sortBy(this, 3)">유형 <span class="arrow"></span></th>
+          <th onclick="sortBy(this, 4)">마감 <span class="arrow"></span></th>
+          <th onclick="sortBy(this, 5)">긴급도 <span class="arrow"></span></th>
+          <th>대응현황</th>
+          <th onclick="sortBy(this, 7)">리스크 <span class="arrow"></span></th>
+          <th></th>
+        </tr></thead>
+        <tbody id="ov-body">{rows}
+          <tr class="empty-row" style="display:none"><td colspan="9">
+            조건에 맞는 요청이 없습니다.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <div id="view-detail">
+    <div class="back-bar">
+      <button class="back-btn" onclick="showList()">← 전체 목록</button>
+      <button class="nav-btn" id="nav-prev" onclick="navDetail(-1)">‹ 이전</button>
+      <span class="nav-pos" id="nav-pos"></span>
+      <button class="nav-btn" id="nav-next" onclick="navDetail(1)">다음 ›</button>
+    </div>
+    {cards or "<p>표시할 메일이 없습니다.</p>"}
+  </div>
 </main>
 <script>
+var currentList = [];   // 필터 적용된 mail_id 순서
+var currentIdx = -1;
+
+function visibleRows() {{
+  return Array.prototype.slice.call(
+    document.querySelectorAll("#ov-body tr.ov-row"))
+    .filter(function(tr) {{ return tr.style.display !== "none"; }});
+}}
+
+function applyFilters() {{
+  var c = document.getElementById("f-customer").value;
+  var u = document.getElementById("f-urgency").value;
+  var fl = document.getElementById("f-flag").value;
+  var q = document.getElementById("f-text").value.trim().toLowerCase();
+  var shown = 0;
+  document.querySelectorAll("#ov-body tr.ov-row").forEach(function(tr) {{
+    var ok = (!c || tr.dataset.customer === c)
+          && (!u || tr.dataset.urgency === u)
+          && (!fl || tr.dataset.flags.split(",").indexOf(fl) !== -1)
+          && (!q || tr.dataset.text.indexOf(q) !== -1);
+    tr.style.display = ok ? "" : "none";
+    if (ok) shown++;
+  }});
+  document.querySelector(".empty-row").style.display = shown ? "none" : "";
+}}
+
+function filterCustomer(ev, a) {{
+  ev.stopPropagation();
+  document.getElementById("f-customer").value = a.textContent.trim();
+  applyFilters();
+}}
+
+var sortState = {{ col: -1, asc: true }};
+function sortBy(th, col) {{
+  sortState.asc = (sortState.col === col) ? !sortState.asc : true;
+  sortState.col = col;
+  var body = document.getElementById("ov-body");
+  var rows = Array.prototype.slice.call(body.querySelectorAll("tr.ov-row"));
+  rows.sort(function(a, b) {{
+    var va = a.cells[col].dataset.v || "", vb = b.cells[col].dataset.v || "";
+    var na = parseFloat(va), nb = parseFloat(vb);
+    var cmp = (!isNaN(na) && !isNaN(nb)) ? na - nb : va.localeCompare(vb, "ko");
+    return sortState.asc ? cmp : -cmp;
+  }});
+  rows.forEach(function(r) {{ body.insertBefore(r, body.lastElementChild); }});
+  document.querySelectorAll("table.ov th .arrow").forEach(function(s) {{
+    s.textContent = ""; }});
+  th.querySelector(".arrow").textContent = sortState.asc ? "▲" : "▼";
+}}
+
+function showDetail(mailId) {{
+  currentList = visibleRows().map(function(tr) {{ return tr.dataset.id; }});
+  currentIdx = currentList.indexOf(mailId);
+  document.querySelectorAll(".card").forEach(function(c) {{
+    c.classList.remove("active"); }});
+  var card = document.getElementById("card-" + mailId);
+  if (card) card.classList.add("active");
+  document.getElementById("view-list").style.display = "none";
+  document.getElementById("view-detail").style.display = "block";
+  updateNav();
+  window.scrollTo(0, 0);
+}}
+
+function navDetail(step) {{
+  var next = currentIdx + step;
+  if (next < 0 || next >= currentList.length) return;
+  currentIdx = next;
+  document.querySelectorAll(".card").forEach(function(c) {{
+    c.classList.remove("active"); }});
+  document.getElementById("card-" + currentList[currentIdx])
+          .classList.add("active");
+  updateNav();
+  window.scrollTo(0, 0);
+}}
+
+function updateNav() {{
+  document.getElementById("nav-prev").disabled = currentIdx <= 0;
+  document.getElementById("nav-next").disabled =
+      currentIdx >= currentList.length - 1;
+  document.getElementById("nav-pos").textContent =
+      (currentIdx + 1) + " / " + currentList.length;
+}}
+
+function showList() {{
+  document.getElementById("view-detail").style.display = "none";
+  document.getElementById("view-list").style.display = "block";
+}}
+
 function copyDraft(ev, btn) {{
   ev.preventDefault(); ev.stopPropagation();
   var text = document.getElementById(btn.dataset.target).innerText;
