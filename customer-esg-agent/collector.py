@@ -64,12 +64,17 @@ def _sender_address(item):
             return ""
 
 
-def collect(config, processed_ids, limit=None):
+def collect(config, processed_ids, limit=None, since=None, until=None):
     """지정 폴더에서 미처리 메일을 수집해 work/inbox/에 JSON으로 저장한다.
 
+    since/until: 'YYYY-MM-DD' 문자열 — 수신일 기준 수집 기간 (경계 포함).
+                 생략 시 기간 제한 없음.
     반환: 새로 저장된 mail_id 목록.
     원본 메일은 어떤 속성도 변경하지 않는다 (UnRead 상태 유지, 이동/삭제 없음).
     """
+    import datetime as _dt
+    since_d = _dt.date.fromisoformat(since) if since else None
+    until_d = _dt.date.fromisoformat(until) if until else None
     try:
         import win32com.client
     except ImportError:
@@ -95,6 +100,12 @@ def collect(config, processed_ids, limit=None):
         try:
             if getattr(item, "Class", None) != 43:  # 43 = olMail
                 continue
+            received = item.ReceivedTime
+            received_date = _dt.date(received.year, received.month, received.day)
+            if until_d and received_date > until_d:
+                continue
+            if since_d and received_date < since_d:
+                break  # 최신순 정렬이므로 이후는 모두 기간 이전
             entry_id = item.EntryID
             mail_id = mail_id_from_entry_id(entry_id)
             if mail_id in processed_ids:
@@ -113,7 +124,7 @@ def collect(config, processed_ids, limit=None):
                 "mail_id": mail_id,
                 "entry_id": entry_id,
                 "store_id": getattr(folder, "StoreID", ""),
-                "received_at": item.ReceivedTime.strftime("%Y-%m-%dT%H:%M:%S"),
+                "received_at": received.strftime("%Y-%m-%dT%H:%M:%S"),
                 "sender": _sender_address(item),
                 "sender_name": getattr(item, "SenderName", ""),
                 "subject": item.Subject or "",

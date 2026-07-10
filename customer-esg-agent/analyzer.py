@@ -23,8 +23,10 @@ INBOX_DIR = os.path.join(BASE_DIR, "work", "inbox")
 ANALYZED_DIR = os.path.join(BASE_DIR, "work", "analyzed")
 PROMPT_DIR = os.path.join(BASE_DIR, "prompts")
 FACTSHEET_MD = os.path.join(BASE_DIR, "data", "factsheet.md")
+FACTSHEET_JSON = os.path.join(BASE_DIR, "data", "factsheet.json")
 
 VALID_STATUS = ("답변가능", "부분가능", "데이터없음")
+VALID_SEVERITY = ("높음", "중간", "낮음")
 
 DRAFT_BANNER = "⚠️ [AI 생성 초안 — 발송 전 반드시 검토 필요]"
 
@@ -42,6 +44,16 @@ def _load_factsheet():
         log.warning("data/factsheet.md가 없습니다. 매칭 단계에서 모든 항목이 "
                     "'데이터없음'으로 분류됩니다. tools/xlsx_to_md.py를 먼저 실행하세요.")
         return ""
+
+
+def _load_factsheet_index():
+    """factsheet.json(공개 Y행만)을 item_code → 상세 dict 로 로드한다."""
+    try:
+        with open(FACTSHEET_JSON, encoding="utf-8") as f:
+            rows = json.load(f)
+        return {r.get("item_code"): r for r in rows if r.get("item_code")}
+    except Exception:
+        return {}
 
 
 def match_customer(sender, config):
@@ -103,8 +115,27 @@ def _normalize_requirements(reqs):
     return out
 
 
-def analyze_mail(mail, config, factsheet_md, prompts):
+def _normalize_risks(risks):
+    """LLM 리스크 검토 출력을 정규화한다."""
+    out = []
+    for r in risks or []:
+        if not isinstance(r, dict) or not str(r.get("description", "")).strip():
+            continue
+        sev = r.get("severity", "중간")
+        out.append({
+            "target": str(r.get("target") or "전체"),
+            "severity": sev if sev in VALID_SEVERITY else "중간",
+            "description": str(r.get("description", "")).strip(),
+            "mitigation": str(r.get("mitigation", "")).strip(),
+        })
+    order = {"높음": 0, "중간": 1, "낮음": 2}
+    out.sort(key=lambda r: order[r["severity"]])
+    return out
+
+
+def analyze_mail(mail, config, factsheet_md, prompts, factsheet_index=None):
     """메일 1건을 LLM 1~3회 호출로 분석해 §5.2 스키마 JSON을 반환한다."""
+    factsheet_index = factsheet_index or {}
     body = _truncate_body(mail.get("body", ""), config)
     customer_names = [c["name"] for c in config.get("customers", [])]
 
@@ -153,6 +184,12 @@ def analyze_mail(mail, config, factsheet_md, prompts):
         for r in requirements:
             r["status"] = "데이터없음"
 
+    # 보유정보 연결: 매칭된 item_code의 실제 값·출처를 붙인다 (대시보드 표시용).
+    # factsheet.json은 public_yn=Y 행만 담고 있으므로 C4가 그대로 유지된다.
+    for r in requirements:
+        r["matched_data"] = [factsheet_index[c] for c in r["matched_items"]
+                             if c in factsheet_index]
+
     # ── 고객사/긴급도는 코드에서 확정 ────────────────────────
     customer = match_customer(mail.get("sender", ""), config) \
         or extracted.get("customer") or "미분류"
@@ -179,6 +216,7 @@ def analyze_mail(mail, config, factsheet_md, prompts):
         "status": "OK",
         "reply_draft": None,
         "dept_requests": [],
+        "risks": [],
     }
 
     # ── 호출 3: 초안 생성 ────────────────────────────────────
@@ -210,12 +248,16 @@ def analyze_mail(mail, config, factsheet_md, prompts):
                 "body": f"{DRAFT_BANNER}\n\n{dr.get('body', '')}",
             })
         result["dept_requests"] = dept_requests
+        result["risks"] = _normalize_risks(drafts.get("risks"))
 
     return result
 
 
-def analyze_all(mail_ids, config):
-    """수집된 메일들을 1건씩 분석한다. 실패 건은 ERROR로 표기하고 계속 진행."""
+def analyze_all(mail_ids, config, progress_cb=None):
+    """수집된 메일들을 1건씩 분석한다. 실패 건은 ERROR로 표기하고 계속 진행.
+
+    progress_cb(done, total, subject): 웹 대시보드 진행률 표시용 콜백(선택).
+    """
     os.makedirs(ANALYZED_DIR, exist_ok=True)
     prompts = {
         "extract": _load_prompt("extract.txt"),
@@ -223,14 +265,18 @@ def analyze_all(mail_ids, config):
         "draft": _load_prompt("draft.txt"),
     }
     factsheet_md = _load_factsheet()
+    factsheet_index = _load_factsheet_index()
 
     results = []
-    for mail_id in mail_ids:
+    for i, mail_id in enumerate(mail_ids):
         in_path = os.path.join(INBOX_DIR, f"{mail_id}.json")
         try:
             with open(in_path, encoding="utf-8") as f:
                 mail = json.load(f)
-            result = analyze_mail(mail, config, factsheet_md, prompts)
+            if progress_cb:
+                progress_cb(i, len(mail_ids), mail.get("subject", ""))
+            result = analyze_mail(mail, config, factsheet_md, prompts,
+                                  factsheet_index)
             log.info("분석 완료: %s | %s | 요구사항 %d건",
                      mail_id, result["customer"], len(result["requirements"]))
         except Exception as e:
@@ -261,9 +307,12 @@ def analyze_all(mail_ids, config):
                 "error": str(e),
                 "reply_draft": None,
                 "dept_requests": [],
+                "risks": [],
             }
         out_path = os.path.join(ANALYZED_DIR, f"{mail_id}.json")
         with open(out_path, "w", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False, indent=2)
         results.append(result)
+    if progress_cb:
+        progress_cb(len(mail_ids), len(mail_ids), "")
     return results

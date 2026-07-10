@@ -1,15 +1,18 @@
 # -*- coding: utf-8 -*-
-"""factsheet.xlsx → data/factsheet.md 변환기.
+"""factsheet.xlsx → data/factsheet.md + data/factsheet.json 변환기.
 
 작업지시서 §5.1:
-- 원본은 factsheet.xlsx (사람이 유지보수), agent는 factsheet.md만 참조.
+- 원본은 factsheet.xlsx (사람이 유지보수), agent는 변환본만 참조.
 - **public_yn = 'Y'인 행만** 변환한다. N인 행은 원천 제외 (C4).
   LLM에게 대외비 데이터를 애초에 전달하지 않는 것이 가장 확실한 안전장치다.
+- factsheet.md   : LLM 프롬프트용 표
+- factsheet.json : 대시보드 '보유정보' 표시용 구조화 사본 (동일하게 Y행만)
 
 사용법:
   python tools/xlsx_to_md.py [xlsx경로] [md출력경로]
-  (인자 생략 시 data/factsheet.xlsx → data/factsheet.md)
+  (인자 생략 시 data/factsheet.xlsx → data/factsheet.md + factsheet.json)
 """
+import json
 import os
 import sys
 
@@ -24,7 +27,7 @@ MD_COLUMNS = [c for c in COLUMNS if c != "public_yn"]
 
 
 def convert(xlsx_path=DEFAULT_XLSX, md_path=DEFAULT_MD):
-    """public_yn=Y 행만 필터링해 Markdown 표를 생성한다.
+    """public_yn=Y 행만 필터링해 Markdown 표와 JSON 사본을 생성한다.
 
     반환: (포함 행 수, 제외 행 수)
     """
@@ -71,6 +74,12 @@ def convert(xlsx_path=DEFAULT_XLSX, md_path=DEFAULT_MD):
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
+
+    # 구조화 사본 (Y행만 — C4 동일 적용)
+    json_path = os.path.splitext(md_path)[0] + ".json"
+    records = [dict(zip(MD_COLUMNS, r)) for r in included]
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(records, f, ensure_ascii=False, indent=2)
 
     return len(included), excluded
 

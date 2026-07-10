@@ -80,13 +80,21 @@ class MockLLMHandler(http.server.BaseHTTPRequestHandler):
                      "status": "데이터없음", "owner_dept": "환경안전팀"},
                 ],
             }, ensure_ascii=False) + "\n```"
-        elif "초안 작성 도우미" in system:  # draft
+        elif "리스크 검토 도우미" in system:  # draft + risk
             content = json.dumps({
                 "reply_draft": "안녕하세요. Scope 1 배출량은 1234567 tCO2eq입니다. "
                                "(출처: 2026 지속가능경영보고서 p.42)",
                 "dept_requests": [
                     {"owner_dept": "환경안전팀",
                      "body": "LTIR 데이터를 요청드립니다."},
+                ],
+                "risks": [
+                    {"target": "R2", "severity": "높음",
+                     "description": "LTIR은 대외 미공개 지표로 공개 범위 확대 우려.",
+                     "mitigation": "환경안전팀과 공개 가능 수준 사전 협의."},
+                    {"target": "전체", "severity": "낮음",
+                     "description": "마감까지 여유가 있어 일정 리스크는 낮음.",
+                     "mitigation": ""},
                 ],
             }, ensure_ascii=False)
         else:
@@ -219,14 +227,16 @@ class TestAnalyzerE2E(BaseWithServer):
                 with open(os.path.join(inbox, m["mail_id"] + ".json"),
                           "w", encoding="utf-8") as f:
                     json.dump(m, f, ensure_ascii=False)
-            old = (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR, analyzer.FACTSHEET_MD)
-            analyzer.INBOX_DIR, analyzer.ANALYZED_DIR, analyzer.FACTSHEET_MD = \
-                inbox, analyzed, md
+            old = (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR,
+                   analyzer.FACTSHEET_MD, analyzer.FACTSHEET_JSON)
+            analyzer.INBOX_DIR, analyzer.ANALYZED_DIR = inbox, analyzed
+            analyzer.FACTSHEET_MD = md
+            analyzer.FACTSHEET_JSON = os.path.splitext(md)[0] + ".json"
             try:
                 return analyzer.analyze_all([m["mail_id"] for m in mails], CONFIG)
             finally:
                 (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR,
-                 analyzer.FACTSHEET_MD) = old
+                 analyzer.FACTSHEET_MD, analyzer.FACTSHEET_JSON) = old
 
     def test_full_pipeline(self):
         results = self._run([self._mail("m001")])
@@ -241,6 +251,13 @@ class TestAnalyzerE2E(BaseWithServer):
         self.assertIn(analyzer.DRAFT_BANNER, r["reply_draft"])  # §5.3 배너
         self.assertEqual(r["dept_requests"][0]["owner_dept"], "환경안전팀")
         self.assertIn(analyzer.DRAFT_BANNER, r["dept_requests"][0]["body"])
+        # 보유정보 연결: 매칭된 R1에 factsheet 값·출처가 붙는다
+        r1 = next(q for q in r["requirements"] if q["req_id"] == "R1")
+        self.assertEqual(r1["matched_data"][0]["item_code"], "E-GHG-S1")
+        self.assertEqual(r1["matched_data"][0]["value"], "1234567")
+        # 리스크 검토: 정규화 + 심각도 내림차순 정렬
+        self.assertEqual([k["severity"] for k in r["risks"]], ["높음", "낮음"])
+        self.assertIn("LTIR", r["risks"][0]["description"])
 
     def test_t2_partial_failure(self):
         """T2: 1건 실패 시 해당 건 ERROR, 나머지 정상 처리."""
@@ -301,6 +318,13 @@ class TestHTML(unittest.TestCase):
         result["summary"] = "<script>alert(1)</script> 요약"
         result["reply_draft"] = "초안 본문"
         result["dept_requests"] = [{"owner_dept": "환경안전팀", "body": "본문"}]
+        result["requirements"][0]["matched_data"] = [
+            {"item_code": "E-GHG-S1", "item_name": "Scope 1 배출량",
+             "year": "2025", "site": "전사", "value": "1234567",
+             "unit": "tCO2eq", "source": "보고서 p.42", "note": ""}]
+        result["risks"] = [
+            {"target": "R1", "severity": "높음",
+             "description": "공개 범위 확대 우려", "mitigation": "사전 협의"}]
         html_text = reporter.build_html([result])
         self.assertIn("예시고객A", html_text)
         self.assertNotIn("<script>alert(1)</script>", html_text)  # 이스케이프 확인
@@ -308,8 +332,84 @@ class TestHTML(unittest.TestCase):
         self.assertIn("복사", html_text)
         self.assertIn("outlook:EID-1", html_text)
         self.assertNotIn("http://", html_text.split("<body>")[0])  # 외부 CDN 없음
-        # KPI 검증
-        self.assertIn("즉답가능", html_text)
+        # 신규 요소: KPI / 보유정보 / 리스크 검토
+        self.assertIn("고위험 리스크", html_text)
+        self.assertIn("1234567", html_text)          # 보유정보 값
+        self.assertIn("보고서 p.42", html_text)       # 보유정보 출처
+        self.assertIn("공개 범위 확대 우려", html_text)  # 리스크
+        self.assertIn("④ 답변 리스크 검토", html_text)
+
+
+class TestDashboardServer(BaseWithServer):
+    """웹 대시보드: /run → /status → /report 흐름 스모크 테스트."""
+
+    def test_run_via_web(self):
+        import urllib.request
+        import time
+        import dashboard_server
+        import pipeline
+
+        with tempfile.TemporaryDirectory() as tmp:
+            inbox = os.path.join(tmp, "inbox")
+            os.makedirs(inbox)
+            data = os.path.join(tmp, "data")
+            os.makedirs(data)
+            xlsx = os.path.join(data, "factsheet.xlsx")
+            md = os.path.join(data, "factsheet.md")
+            make_sample_factsheet.make(xlsx)
+            xlsx_to_md.convert(xlsx, md)
+            mail = {"mail_id": "web01", "entry_id": "EID-web01", "store_id": "S",
+                    "received_at": "2026-07-08T14:22:00",
+                    "sender": "buyer@example-a.com", "sender_name": "Buyer",
+                    "subject": "웹 실행 테스트", "attachments": [],
+                    "body": "Scope 1 배출량과 LTIR을 제출 바랍니다."}
+            with open(os.path.join(inbox, "web01.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump(mail, f, ensure_ascii=False)
+
+            saved = (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR,
+                     analyzer.FACTSHEET_MD, analyzer.FACTSHEET_JSON,
+                     reporter.OUTPUT_DIR, pipeline.PROCESSED_PATH)
+            analyzer.INBOX_DIR = inbox
+            analyzer.ANALYZED_DIR = os.path.join(tmp, "analyzed")
+            analyzer.FACTSHEET_MD = md
+            analyzer.FACTSHEET_JSON = os.path.splitext(md)[0] + ".json"
+            reporter.OUTPUT_DIR = os.path.join(tmp, "output")
+            pipeline.PROCESSED_PATH = os.path.join(tmp, "processed_ids.json")
+
+            web = http.server.ThreadingHTTPServer(
+                ("127.0.0.1", 0), dashboard_server.Handler)
+            threading.Thread(target=web.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{web.server_address[1]}"
+            try:
+                req = urllib.request.Request(
+                    base + "/run", method="POST",
+                    data=json.dumps({"skip_collect": True,
+                                     "save_drafts": False}).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req) as r:
+                    self.assertEqual(r.status, 200)
+                for _ in range(100):
+                    with urllib.request.urlopen(base + "/status") as r:
+                        status = json.loads(r.read().decode("utf-8"))
+                    if not status["running"]:
+                        break
+                    time.sleep(0.1)
+                self.assertFalse(status["running"])
+                self.assertTrue(status["result"]["ok"],
+                                status["result"]["message"])
+                self.assertEqual(status["result"]["total"], 1)
+                with urllib.request.urlopen(base + "/report") as r:
+                    page = r.read().decode("utf-8")
+                self.assertIn("예시고객A", page)
+                self.assertIn("④ 답변 리스크 검토", page)
+            finally:
+                web.shutdown()
+                (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR,
+                 analyzer.FACTSHEET_MD, analyzer.FACTSHEET_JSON,
+                 reporter.OUTPUT_DIR, pipeline.PROCESSED_PATH) = saved
+                dashboard_server.STATE.update(
+                    running=False, stage=None, result=None)
 
 
 class TestHardConstraints(unittest.TestCase):
