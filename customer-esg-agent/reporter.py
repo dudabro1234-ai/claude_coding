@@ -87,8 +87,41 @@ def _kpi(results):
     ]
 
 
+def _sparkline_cell(d):
+    """월별 시계열이 있으면 인라인 SVG 스파크라인 + 12개월 값 요약을 만든다.
+
+    외부 리소스 없이 SVG를 직접 그린다(오프라인 렌더 가능).
+    """
+    monthly = d.get("monthly")
+    if not monthly:
+        return ""
+    pairs = [(m, monthly.get(str(m))) for m in range(1, 13)]
+    vals = [v for _, v in pairs if isinstance(v, (int, float))]
+    if len(vals) < 2:
+        return ""
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1
+    w, h, n = 132, 26, 12
+    bw = w / n
+    bars = ""
+    for i, (m, v) in enumerate(pairs):
+        if not isinstance(v, (int, float)):
+            continue
+        bh = 3 + (h - 5) * (v - lo) / span
+        x = i * bw
+        y = h - bh
+        bars += (f"<rect x='{x:.1f}' y='{y:.1f}' width='{bw-1.5:.1f}' "
+                 f"height='{bh:.1f}' rx='1' fill='#0ea5e9' opacity='0.85'>"
+                 f"<title>{m}월: {v}</title></rect>")
+    total = sum(vals)
+    return (f"<div class='spark'><svg viewBox='0 0 {w} {h}' width='{w}' "
+            f"height='{h}' preserveAspectRatio='none'>{bars}</svg>"
+            f"<span class='spark-lab'>월별 {len(vals)}개 · 합 "
+            f"{total:,.1f} · 최소 {lo:,.1f} / 최대 {hi:,.1f}</span></div>")
+
+
 def _matched_data_html(req):
-    """보유 정보 블록: 매칭된 factsheet 항목의 실제 값·출처."""
+    """보유 정보 블록: 매칭된 factsheet/플랫폼 항목의 값·출처·월별추세."""
     data = req.get("matched_data") or []
     if not data:
         codes = req.get("matched_items") or []
@@ -101,13 +134,28 @@ def _matched_data_html(req):
                 + "</div>")
     rows = ""
     for d in data:
-        rows += (f"<tr><td class='code'>{_esc(d.get('item_code'))}</td>"
-                 f"<td>{_esc(d.get('item_name'))}</td>"
-                 f"<td class='val'>{_esc(d.get('value'))} {_esc(d.get('unit'))}</td>"
-                 f"<td>{_esc(d.get('year'))} · {_esc(d.get('site'))}</td>"
-                 f"<td class='src'>{_esc(d.get('source'))}</td></tr>")
+        code = d.get("item_code") or d.get("platform_id") or ""
+        name = d.get("item_name") or d.get("name") or ""
+        unit = d.get("unit") or ""
+        # 값: factsheet는 value, 플랫폼은 최근 연도값
+        value = d.get("value")
+        year = d.get("year")
+        if value is None and d.get("annual"):
+            yr = max(d["annual"], key=lambda y: int(y) if str(y).isdigit() else -1)
+            value, year = d["annual"][yr], yr
+        src_type = d.get("source_type", "factsheet")
+        badge = ("<span class='src-badge plat'>사내플랫폼</span>"
+                 if src_type == "platform"
+                 else "<span class='src-badge fs'>검증</span>")
+        trend = _sparkline_cell(d)
+        rows += (f"<tr><td class='code'>{_esc(code)}</td>"
+                 f"<td>{_esc(name)} {badge}</td>"
+                 f"<td class='val'>{_esc(value)} {_esc(unit)}</td>"
+                 f"<td>{_esc(year)} · {_esc(d.get('site'))}</td>"
+                 f"<td class='src'>{_esc(d.get('source') or d.get('cycle') or '')}"
+                 f"{trend}</td></tr>")
     return ("<table class='fact'><thead><tr><th>코드</th><th>지표</th>"
-            "<th>값</th><th>기준</th><th>출처</th></tr></thead>"
+            "<th>값</th><th>기준</th><th>출처 / 월별추세</th></tr></thead>"
             f"<tbody>{rows}</tbody></table>")
 
 
@@ -124,7 +172,7 @@ def _requirement_block(req):
         <div class="req-content">{_esc(req.get('content'))}</div>
       </div>
       <div>
-        <div class="label">② 보유 정보 (Factsheet · 공개가능 데이터만)</div>
+        <div class="label">② 보유 정보 (Factsheet 공개항목 · 사내플랫폼)</div>
         {_matched_data_html(req)}
       </div>
     </div>
@@ -433,6 +481,13 @@ def build_html(results, run_date=None):
   table.fact .code {{ font-family: Consolas, monospace; white-space: nowrap; }}
   table.fact .val {{ font-weight: 700; min-width: 90px; }}  /* 서술형 값 줄바꿈 허용 */
   table.fact .src {{ color: var(--sub); }}
+  .src-badge {{ font-size: 10px; font-weight: 700; border-radius: 5px;
+    padding: 1px 6px; margin-left: 4px; white-space: nowrap; }}
+  .src-badge.fs {{ color: #065f46; background: #d1fae5; }}
+  .src-badge.plat {{ color: #075985; background: #e0f2fe; }}
+  .spark {{ margin-top: 4px; }}
+  .spark svg {{ display: block; width: 132px; height: 26px; }}
+  .spark-lab {{ font-size: 10px; color: var(--sub); }}
   .nodata {{ font-size: 13px; color: var(--sub); background: #f8fafc;
             border: 1px dashed var(--line); border-radius: 8px;
             padding: 10px 14px; }}

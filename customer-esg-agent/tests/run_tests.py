@@ -534,6 +534,75 @@ class TestChatbot(BaseWithServer):
                  chatbot.FACTSHEET_MD) = saved
 
 
+class TestPlatformIndex(unittest.TestCase):
+    """Phase A: 플랫폼 export 인덱싱 + 조회 + 월별 렌더."""
+
+    HEADER = ["No.", "지표고유번호", "회사", "사이트", "PRISM", "분야", "대분류",
+              "중분류", "소분류", "세분류", "단위", "구분", "지표구분", "수집주기",
+              "공시여부", "2022년", "2023년", "2024년", "2025년"] + \
+             [f"{m}월" for m in range(1, 13)]
+
+    def _make_export(self, path):
+        from openpyxl import Workbook
+        wb = Workbook(); ws = wb.active
+        ws.append(self.HEADER)
+        # Scope 1 (월별 있음)
+        ws.append([1, "SKHALGE001", "SK하이닉스", "이천", "기타", "환경", "기후변화",
+                   "온실가스", "Scope 1", "CO2", "tCO2eq", "합산", "입력값", "분기",
+                   "Y", 100, 200, 300, 400] + [10*i for i in range(1, 13)])
+        # 매출액 (연간만)
+        ws.append([2, "SKHALGE002", "SK하이닉스", "전사", "기타", "경제/거버넌스",
+                   "재무", "주요 재무 실적", "매출액", "월별", "십억 원", "합산",
+                   "입력값", "분기", "Y", 44622, 32766, 66193, 97146] +
+                  [None]*12)
+        wb.save(path)
+
+    def test_ingest_and_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            xlsx = os.path.join(tmp, "export.xlsx")
+            out = os.path.join(tmp, "platform_index.json")
+            self._make_export(xlsx)
+            import importlib.util
+            spec = importlib.util.spec_from_file_location(
+                "platform_ingest",
+                os.path.join(BASE_DIR, "tools", "platform_ingest.py"))
+            ingest = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(ingest)
+            n, _ = ingest.convert(xlsx, out)
+            self.assertEqual(n, 2)
+
+            import platform_index as px
+            hits = px.search("scope 1 온실가스", field="환경", index_path=out)
+            self.assertEqual(hits[0]["name"],
+                             "기후변화 > 온실가스 > Scope 1 > CO2")
+            self.assertEqual(hits[0]["site"], "이천")
+            val, yr = px.latest_value(hits[0])
+            self.assertEqual((val, yr), (400, "2025"))       # 최근 연도값
+            ms = px.monthly_series(hits[0])
+            self.assertEqual(len(ms), 12)
+            self.assertEqual(ms[0], (1, 10))
+            # 재무는 월별 없음
+            fin = px.search("매출액 재무", index_path=out)[0]
+            self.assertEqual(px.monthly_series(fin), [])
+
+    def test_dashboard_renders_monthly_and_badges(self):
+        # 플랫폼 출처 matched_data(월별 포함)가 대시보드에 스파크라인+배지로 표시
+        result = json.loads(json.dumps(TestTracker.RESULT))
+        result["requirements"][0]["matched_data"] = [{
+            "platform_id": "SKHALGE001", "name": "온실가스 > Scope 1",
+            "unit": "tCO2eq", "site": "이천", "cycle": "분기",
+            "source_type": "platform",
+            "annual": {"2024": 300, "2025": 400},
+            "monthly": {str(m): 10*m for m in range(1, 13)},
+        }]
+        result["risks"] = []
+        html_text = reporter.build_html([result])
+        self.assertIn("사내플랫폼", html_text)           # 출처 배지
+        self.assertIn("<svg", html_text)                 # 스파크라인
+        self.assertIn("월별 12개", html_text)            # 요약 라벨
+        self.assertIn("400 tCO2eq", html_text)           # 최근 연도값 표시
+
+
 class TestHardConstraints(unittest.TestCase):
     """T7/T8: 금지 코드 정적 검사."""
 
