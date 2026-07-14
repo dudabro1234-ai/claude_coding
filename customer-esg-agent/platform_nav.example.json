@@ -1,0 +1,12 @@
+{
+  "_comment": "이 파일을 platform_nav.json으로 복사한 뒤 실제 플랫폼 URL과 클릭 경로를 채우세요. steps는 위에서부터 순서대로 실행됩니다. 각 스텝은 selector(CSS) 또는 text(화면에 보이는 글자) 중 하나로 대상을 지정합니다.",
+  "url": "https://내부-esg-플랫폼-주소/데이터",
+  "timeout_ms": 30000,
+  "login_check": "text=로그인",
+  "steps": [
+    { "action": "click", "text": "ESG 데이터 조회" },
+    { "action": "click", "selector": "#year-select", "_note": "예: 연도 선택 클릭" },
+    { "action": "wait", "ms": 1500 }
+  ],
+  "download": { "action": "click", "text": "엑셀 다운로드" }
+}

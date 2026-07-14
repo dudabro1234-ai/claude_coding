@@ -46,6 +46,26 @@ Factsheet(사람이 검증한 공개용 정제 데이터) 위에 **사내 데이
 - 플랫폼 원천값(`platform_index.json`, `platform_drop/`)은 대외비를 포함하므로
   git 커밋·외부 전송이 금지됩니다(.gitignore 등록).
 
+#### 데이터 수집 방법
+
+**방법 1 — 수동 드롭인 (기본, 의존성 없음)**: 플랫폼에서 받은 xlsx를
+`data\platform_drop\`에 넣고 `python tools\platform_ingest.py` 실행.
+
+**방법 2 — 브라우저 자동화 (선택, `run_platform_sync.bat`)**: URL 접속 → 클릭 →
+다운로드를 스크립트가 대신합니다. **로그인은 자동화하지 않고, 담당자가 평소 로그인해 둔
+브라우저 세션을 재사용**합니다(자격증명 저장 안 함). 세션이 만료되면 일시정지하고
+수동 로그인을 기다립니다.
+
+준비:
+1. `pip install -r requirements-connector.txt` 후 `python -m playwright install chromium`
+   (이 Playwright 의존성은 자동화에만 필요 — 코어 agent는 없이도 동작)
+2. `platform_nav.example.json`을 `platform_nav.json`으로 복사해 실제 **URL과 클릭 순서**를
+   기입. 각 스텝은 `selector`(CSS) 또는 `text`(화면 글자)로 대상을 지정하며, UI가 바뀌면
+   이 파일만 고치면 됩니다.
+3. `run_platform_sync.bat` 실행 → 다운로드 후 자동 인덱싱까지 수행.
+
+> `platform_nav.json`(내부 URL)과 `browser_profile\`(로그인 세션)은 gitignore 처리됩니다.
+
 ## 설치 (Windows 업무 PC)
 
 1. Python 3.10+ 설치 확인: `python --version`

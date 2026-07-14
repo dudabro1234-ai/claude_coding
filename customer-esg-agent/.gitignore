@@ -16,6 +16,10 @@ data/platform_drop/*
 !data/platform_drop/README.txt
 data/platform_index.json
 
+# 브라우저 자동화(Phase C): 로그인 세션 프로필·내부 URL 설정 (커밋 금지)
+browser_profile/
+platform_nav.json
+
 # Python
 __pycache__/
 *.pyc

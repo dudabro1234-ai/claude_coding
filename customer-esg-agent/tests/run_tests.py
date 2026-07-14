@@ -718,6 +718,73 @@ class TestPhaseBCrossValidation(unittest.TestCase):
                 platform_index._CACHE.update(mtime=None, doc=None)
 
 
+class TestPlatformConnector(unittest.TestCase):
+    """Phase C: 브라우저 커넥터 (설정 파싱 항상 검증, 실브라우저는 있으면 검증)."""
+
+    def test_step_resolution_and_missing_playwright(self):
+        import platform_connector as pc
+        # 스텝 정의 검증 (selector/text/role 없으면 오류)
+        class FakePage:
+            def locator(self, s): return ("sel", s)
+            def get_by_text(self, t, exact=False): return ("text", t)
+        self.assertEqual(pc._resolve_locator(FakePage(), {"selector": "#x"}),
+                         ("sel", "#x"))
+        self.assertEqual(pc._resolve_locator(FakePage(), {"text": "다운로드"}),
+                         ("text", "다운로드"))
+        with self.assertRaises(ValueError):
+            pc._resolve_locator(FakePage(), {"action": "click"})
+        # example nav 설정이 유효한 JSON인지
+        nav = pc.load_nav(os.path.join(BASE_DIR, "platform_nav.example.json"))
+        self.assertIn("url", nav)
+        self.assertIn("download", nav)
+
+    def test_full_download_flow_if_browser_available(self):
+        try:
+            from playwright.sync_api import sync_playwright  # noqa: F401
+        except ImportError:
+            self.skipTest("Playwright 미설치 — 자동화는 opt-in")
+        import platform_connector as pc
+
+        page_html = (
+            "<!DOCTYPE html><html><head><meta charset=utf-8></head><body>"
+            "<button id=q onclick=\"document.getElementById('dl')"
+            ".style.display='inline'\">ESG 데이터 조회</button>"
+            "<a id=dl style='display:none'>엑셀 다운로드</a><script>"
+            "document.getElementById('dl').addEventListener('click',function(e){"
+            "e.preventDefault();var b=new Blob([new Uint8Array([80,75,3,4])],"
+            "{type:'application/octet-stream'});var a=document.createElement('a');"
+            "a.href=URL.createObjectURL(b);a.download='2025_platform_export.xlsx';"
+            "document.body.appendChild(a);a.click();});</script></body></html>")
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                b = page_html.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers(); self.wfile.write(b)
+
+        srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        with tempfile.TemporaryDirectory() as tmp:
+            nav = {"url": f"http://127.0.0.1:{srv.server_address[1]}/",
+                   "timeout_ms": 8000,
+                   "steps": [{"action": "click", "text": "ESG 데이터 조회"}],
+                   "download": {"action": "click", "text": "엑셀 다운로드"}}
+            try:
+                path = pc.sync(nav, profile_dir=os.path.join(tmp, "prof"),
+                               drop_dir=os.path.join(tmp, "drop"), headless=True)
+            except Exception as e:
+                if "Executable doesn't exist" in str(e) or "install" in str(e):
+                    self.skipTest(f"브라우저 바이너리 없음: {e}")
+                raise
+            finally:
+                srv.shutdown()
+            self.assertTrue(os.path.exists(path))
+            self.assertTrue(path.endswith(".xlsx"))
+
+
 class TestHardConstraints(unittest.TestCase):
     """T7/T8: 금지 코드 정적 검사."""
 
