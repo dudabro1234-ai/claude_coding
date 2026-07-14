@@ -117,7 +117,15 @@ Outlook 지정 폴더 → ① 수집(collector) → ② 사내 LLM 분석(analyz
 
 ### 3) Factsheet 준비
 
-1. `data/factsheet.xlsx`를 아래 스키마로 작성합니다 (사람이 유지보수하는 원본):
+**`data/factsheet_template.xlsx`를 복사해 `data/factsheet.xlsx`로 저장한 뒤 실데이터를
+입력하세요.** 템플릿에는 열 설명(2행)과 예시 행 3개(회색 이탤릭)가 들어 있습니다 —
+예시 행은 지우고 쓰시면 되고, 설명 행은 남겨두어도 변환 시 자동으로 제외됩니다.
+`category`(E/S/G)와 `public_yn`(Y/N) 열은 드롭다운으로만 입력됩니다.
+
+> 실데이터가 담긴 `factsheet.xlsx`는 대외비가 포함될 수 있어 git에 커밋되지 않습니다
+> (.gitignore 등록). 템플릿만 저장소에 포함됩니다.
+
+1. 스키마 (사람이 유지보수하는 원본):
 
    | 컬럼 | 설명 |
    |------|------|
