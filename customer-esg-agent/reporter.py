@@ -431,7 +431,7 @@ def build_html(results, run_date=None):
     padding: 5px 8px; text-align: left; vertical-align: top; }}
   table.fact th {{ background: #f8fafc; color: var(--sub); font-size: 11px; }}
   table.fact .code {{ font-family: Consolas, monospace; white-space: nowrap; }}
-  table.fact .val {{ font-weight: 700; white-space: nowrap; }}
+  table.fact .val {{ font-weight: 700; min-width: 90px; }}  /* 서술형 값 줄바꿈 허용 */
   table.fact .src {{ color: var(--sub); }}
   .nodata {{ font-size: 13px; color: var(--sub); background: #f8fafc;
             border: 1px dashed var(--line); border-radius: 8px;
