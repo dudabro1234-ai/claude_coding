@@ -47,6 +47,8 @@ def convert(xlsx_path=DEFAULT_XLSX, md_path=DEFAULT_MD):
         idx[col] = header.index(col)
 
     included, excluded = [], 0
+    auto_seq = 0
+    used_codes = set()
     for row in rows:
         if row is None or all(v is None for v in row):
             continue
@@ -54,8 +56,17 @@ def convert(xlsx_path=DEFAULT_XLSX, md_path=DEFAULT_MD):
         if public != "Y":
             excluded += 1
             continue  # C4: 공개 불가 행은 어떤 출력물에도 포함하지 않는다.
-        included.append([str(row[idx[c]]) if row[idx[c]] is not None else ""
-                         for c in MD_COLUMNS])
+        rec = [str(row[idx[c]]).strip() if row[idx[c]] is not None else ""
+               for c in MD_COLUMNS]
+        # item_code는 선택 입력: 비어 있으면 자동 부여 (매칭·표시용 내부 키)
+        code_i = MD_COLUMNS.index("item_code")
+        if not rec[code_i]:
+            auto_seq += 1
+            while f"AUTO-{auto_seq:03d}" in used_codes:
+                auto_seq += 1
+            rec[code_i] = f"AUTO-{auto_seq:03d}"
+        used_codes.add(rec[code_i])
+        included.append(rec)
     wb.close()
 
     lines = [

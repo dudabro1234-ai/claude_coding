@@ -206,6 +206,29 @@ class TestFactsheetFilter(unittest.TestCase):
             self.assertIn("E-GHG-S1", content)
             self.assertIn("1234567", content)
 
+    def test_item_code_optional_auto_assigned(self):
+        """item_code를 비워도 변환 시 AUTO-nnn이 자동 부여된다."""
+        from openpyxl import Workbook
+        with tempfile.TemporaryDirectory() as tmp:
+            xlsx = os.path.join(tmp, "factsheet.xlsx")
+            md = os.path.join(tmp, "factsheet.md")
+            wb = Workbook()
+            ws = wb.active
+            ws.append(xlsx_to_md.COLUMNS)
+            ws.append(["", "E", "용수 재이용률", 2025, "전사", 41.2, "%",
+                       "보고서 p.50", "Y", ""])
+            ws.append(["E-GHG-S1", "E", "Scope 1", 2025, "전사", 1, "t",
+                       "p.42", "Y", ""])
+            wb.save(xlsx)
+            inc, exc = xlsx_to_md.convert(xlsx, md)
+            self.assertEqual((inc, exc), (2, 0))
+            content = open(md, encoding="utf-8").read()
+            self.assertIn("AUTO-001", content)
+            rows = json.load(open(os.path.splitext(md)[0] + ".json",
+                                  encoding="utf-8"))
+            codes = {r["item_code"] for r in rows}
+            self.assertEqual(codes, {"AUTO-001", "E-GHG-S1"})
+
 
 class TestAnalyzerE2E(BaseWithServer):
     def _mail(self, mail_id, body="Scope 1 배출량과 LTIR을 제출 바랍니다. 마감 있음"):
