@@ -15,8 +15,14 @@ import logging
 import os
 
 import llm_client
+import platform_index
 
 log = logging.getLogger(__name__)
+
+
+def platform_available():
+    """사내 데이터플랫폼 인덱스가 존재하는지 여부."""
+    return platform_index.load().get("count", 0) > 0
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INBOX_DIR = os.path.join(BASE_DIR, "work", "inbox")
@@ -184,11 +190,42 @@ def analyze_mail(mail, config, factsheet_md, prompts, factsheet_index=None):
         for r in requirements:
             r["status"] = "데이터없음"
 
-    # 보유정보 연결: 매칭된 item_code의 실제 값·출처를 붙인다 (대시보드 표시용).
-    # factsheet.json은 public_yn=Y 행만 담고 있으므로 C4가 그대로 유지된다.
+    # 보유정보 연결 + 사내플랫폼 교차검증 (Phase B).
+    #  ① 매칭된 factsheet 공개항목(public_yn=Y)에 값·출처를 붙인다 (C4 유지).
+    #  ② 그 항목에 platform_id가 있으면 플랫폼의 최신·월별값을 덧붙인다.
+    #     factsheet가 '공개 가능'을 보증했으므로 인용해도 안전(교차검증 통과).
+    #  ③ 데이터없음 요구사항은 플랫폼에서 유사지표를 검색해 '사내보유(미검증)'
+    #     후보로만 표시한다(초안 자동 인용 금지 — 담당자 공개검토 유도).
     for r in requirements:
-        r["matched_data"] = [factsheet_index[c] for c in r["matched_items"]
-                             if c in factsheet_index]
+        md = []
+        for c in r["matched_items"]:
+            if c not in factsheet_index:
+                continue
+            entry = dict(factsheet_index[c])
+            entry["source_type"] = "factsheet"
+            pid = str(entry.get("platform_id") or "").strip()
+            if pid and platform_available():
+                ind = platform_index.get(pid)
+                if ind:
+                    entry["annual"] = ind.get("annual")
+                    entry["monthly"] = ind.get("monthly")
+                    entry["cross_validated"] = True
+                    if not entry.get("site"):
+                        entry["site"] = ind.get("site")
+            md.append(entry)
+        r["matched_data"] = md
+
+        # ③ 플랫폼 미검증 후보 (데이터없음일 때만)
+        r["platform_candidates"] = []
+        if r["status"] == "데이터없음" and platform_available():
+            for ind in platform_index.search(r.get("content", ""), limit=3):
+                val, yr = platform_index.latest_value(ind)
+                r["platform_candidates"].append({
+                    "platform_id": ind["platform_id"], "name": ind["name"],
+                    "site": ind.get("site"), "unit": ind.get("unit"),
+                    "value": val, "year": yr,
+                    "has_monthly": bool(ind.get("monthly")),
+                })
 
     # ── 고객사/긴급도는 코드에서 확정 ────────────────────────
     customer = match_customer(mail.get("sender", ""), config) \

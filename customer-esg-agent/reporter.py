@@ -120,6 +120,23 @@ def _sparkline_cell(d):
             f"{total:,.1f} · 최소 {lo:,.1f} / 최대 {hi:,.1f}</span></div>")
 
 
+def _platform_candidates_html(req):
+    """사내플랫폼 미검증 후보 표시 (초안 자동 인용 안 됨 — 담당자 공개검토용)."""
+    cands = req.get("platform_candidates") or []
+    if not cands:
+        return ""
+    items = ""
+    for c in cands:
+        mtag = " · 월별有" if c.get("has_monthly") else ""
+        val = c.get("value")
+        items += (f"<li>{_esc(c.get('name'))} <span class='dim'>[{_esc(c.get('site'))}]</span>"
+                  + (f" — {_esc(val)} {_esc(c.get('unit'))}"
+                     f" ({_esc(c.get('year'))}{mtag})" if val is not None else "")
+                  + "</li>")
+    return (f"<div class='plat-cand'><b>사내플랫폼 유사 데이터 {len(cands)}건 "
+            f"(미검증)</b> — 공개 가능 여부 확인 후 활용<ul>{items}</ul></div>")
+
+
 def _matched_data_html(req):
     """보유 정보 블록: 매칭된 factsheet/플랫폼 항목의 값·출처·월별추세."""
     data = req.get("matched_data") or []
@@ -129,9 +146,10 @@ def _matched_data_html(req):
             return ("<div class='nodata'>매칭 코드: " + _esc(", ".join(codes))
                     + " (상세값은 factsheet.json 재생성 필요)</div>")
         dept = req.get("owner_dept")
-        return ("<div class='nodata'>보유 데이터 없음"
+        base = ("<div class='nodata'>공개 검증된 보유 데이터 없음"
                 + (f" → <b>{_esc(dept)}</b>에 데이터 요청 초안 생성됨" if dept else "")
                 + "</div>")
+        return base + _platform_candidates_html(req)
     rows = ""
     for d in data:
         code = d.get("item_code") or d.get("platform_id") or ""
@@ -488,6 +506,11 @@ def build_html(results, run_date=None):
   .spark {{ margin-top: 4px; }}
   .spark svg {{ display: block; width: 132px; height: 26px; }}
   .spark-lab {{ font-size: 10px; color: var(--sub); }}
+  .plat-cand {{ margin-top: 8px; font-size: 12px; color: #075985;
+    background: #f0f9ff; border: 1px dashed #7dd3fc; border-radius: 8px;
+    padding: 8px 12px; }}
+  .plat-cand ul {{ margin: 4px 0 0; padding-left: 18px; }}
+  .plat-cand li {{ margin: 2px 0; }}
   .nodata {{ font-size: 13px; color: var(--sub); background: #f8fafc;
             border: 1px dashed var(--line); border-radius: 8px;
             padding: 10px 14px; }}

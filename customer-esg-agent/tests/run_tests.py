@@ -603,6 +603,121 @@ class TestPlatformIndex(unittest.TestCase):
         self.assertIn("400 tCO2eq", html_text)           # 최근 연도값 표시
 
 
+class TestPhaseBCrossValidation(unittest.TestCase):
+    """Phase B: factsheet 교차검증 게이트 + 플랫폼 미검증 후보."""
+
+    def _index(self, tmp):
+        # 플랫폼 인덱스 준비 (Scope 1 월별 + 용수 사용량)
+        from openpyxl import Workbook
+        xlsx = os.path.join(tmp, "export.xlsx")
+        out = os.path.join(tmp, "platform_index.json")
+        wb = Workbook(); ws = wb.active
+        ws.append(TestPlatformIndex.HEADER)
+        ws.append([1, "PLAT-GHG-1", "SK하이닉스", "이천", "기타", "환경", "기후변화",
+                   "온실가스", "Scope 1", "CO2", "tCO2eq", "합산", "입력값", "분기",
+                   "Y", 100, 200, 300, 400] + [10*i for i in range(1, 13)])
+        ws.append([2, "PLAT-WATER-1", "SK하이닉스", "이천", "기타", "환경", "수자원",
+                   "용수", "용수 사용량", "", "천톤", "합산", "입력값", "분기",
+                   "Y", 500, 600, 700, 800] + [5*i for i in range(1, 13)])
+        wb.save(xlsx)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "platform_ingest",
+            os.path.join(BASE_DIR, "tools", "platform_ingest.py"))
+        ingest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ingest)
+        ingest.convert(xlsx, out)
+        return out
+
+    def test_cross_validation_and_candidates(self):
+        import analyzer, platform_index
+        with tempfile.TemporaryDirectory() as tmp:
+            idx = self._index(tmp)
+            saved = platform_index.INDEX_PATH
+            platform_index.INDEX_PATH = idx
+            platform_index._CACHE.update(mtime=None, doc=None)
+            try:
+                # factsheet 항목: Scope 1은 platform_id 연결(공개+교차검증),
+                #                용수는 factsheet에 없음 → 데이터없음 후보 검색
+                fs_index = {"E-GHG-S1": {
+                    "item_code": "E-GHG-S1", "item_name": "Scope 1 배출량",
+                    "value": "1234567", "unit": "tCO2eq", "year": "2025",
+                    "site": "전사", "source": "보고서 p.42",
+                    "platform_id": "PLAT-GHG-1"}}
+                reqs = [
+                    {"req_id": "R1", "content": "Scope 1 배출량", "status": "답변가능",
+                     "matched_items": ["E-GHG-S1"], "owner_dept": None},
+                    {"req_id": "R2", "content": "용수 사용량 데이터 제출",
+                     "status": "데이터없음", "matched_items": [],
+                     "owner_dept": "환경안전팀"},
+                ]
+                # analyze_mail 내부 로직 일부를 직접 재현하는 대신 헬퍼 경유
+                self.assertTrue(analyzer.platform_available())
+
+                # R1: 교차검증 → 월별 덧붙음
+                entry = dict(fs_index["E-GHG-S1"])
+                entry["source_type"] = "factsheet"
+                ind = platform_index.get(entry["platform_id"])
+                self.assertIsNotNone(ind)
+                self.assertEqual(len(platform_index.monthly_series(ind)), 12)
+
+                # R2: 데이터없음 → 용수 후보 검색됨
+                cands = platform_index.search("용수 사용량 데이터 제출", limit=3)
+                self.assertTrue(any("용수" in c["name"] for c in cands))
+            finally:
+                platform_index.INDEX_PATH = saved
+                platform_index._CACHE.update(mtime=None, doc=None)
+
+    def test_platform_id_optional_in_factsheet(self):
+        """factsheet에 platform_id 열이 있으면 json에 포함, 없으면 무시."""
+        from openpyxl import Workbook
+        with tempfile.TemporaryDirectory() as tmp:
+            xlsx = os.path.join(tmp, "f.xlsx")
+            md = os.path.join(tmp, "f.md")
+            wb = Workbook(); ws = wb.active
+            ws.append(xlsx_to_md.COLUMNS + ["platform_id"])
+            ws.append(["E1", "E", "Scope 1", 2025, "전사", 1, "t", "p.1",
+                       "Y", "", "PLAT-GHG-1"])
+            wb.save(xlsx)
+            xlsx_to_md.convert(xlsx, md)
+            rows = json.load(open(os.path.splitext(md)[0] + ".json",
+                                  encoding="utf-8"))
+            self.assertEqual(rows[0]["platform_id"], "PLAT-GHG-1")
+            # MD 표에는 platform_id가 없어야 함 (LLM엔 답변재료만)
+            self.assertNotIn("platform_id", open(md, encoding="utf-8").read())
+
+    def test_dashboard_shows_platform_candidates(self):
+        result = json.loads(json.dumps(TestTracker.RESULT))
+        result["requirements"] = [{
+            "req_id": "R1", "content": "용수 사용량", "status": "데이터없음",
+            "matched_items": [], "matched_data": [], "owner_dept": "환경안전팀",
+            "platform_candidates": [{
+                "platform_id": "PLAT-WATER-1", "name": "수자원 > 용수 사용량",
+                "site": "이천", "unit": "천톤", "value": 800, "year": "2025",
+                "has_monthly": True}]}]
+        result["risks"] = []
+        html_text = reporter.build_html([result])
+        self.assertIn("사내플랫폼 유사 데이터", html_text)
+        self.assertIn("미검증", html_text)
+        self.assertIn("용수 사용량", html_text)
+
+    def test_chatbot_platform_context_labeled_internal(self):
+        import chatbot, platform_index
+        with tempfile.TemporaryDirectory() as tmp:
+            idx = self._index(tmp)
+            saved = platform_index.INDEX_PATH
+            platform_index.INDEX_PATH = idx
+            platform_index._CACHE.update(mtime=None, doc=None)
+            try:
+                block = chatbot.platform_context("이천 용수 사용량 알려줘")
+                self.assertIn("용수 사용량", block)
+                self.assertIn("내부 데이터", block)      # 대외 공개 경고 라벨
+                self.assertIn("공개", block)
+            finally:
+                platform_index.INDEX_PATH = saved
+                platform_index._CACHE.update(mtime=None, doc=None)
+
+
 class TestHardConstraints(unittest.TestCase):
     """T7/T8: 금지 코드 정적 검사."""
 

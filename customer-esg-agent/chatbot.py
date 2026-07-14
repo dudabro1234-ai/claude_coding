@@ -16,6 +16,7 @@ import logging
 import os
 
 import llm_client
+import platform_index
 
 log = logging.getLogger(__name__)
 
@@ -146,9 +147,35 @@ def build_context(config=None):
     return "\n\n".join(parts)
 
 
+def platform_context(message, limit=8):
+    """질문과 관련된 사내 데이터플랫폼 지표를 검색해 컨텍스트 블록을 만든다.
+
+    플랫폼 값은 사내 내부 데이터(대외 공개 아님)이므로, 담당자 조회용으로만
+    제공하고 프롬프트에서 '공개검토 전 고객 제공 금지'를 명시한다.
+    """
+    hits = platform_index.search(message, limit=limit)
+    if not hits:
+        return ""
+    lines = []
+    for ind in hits:
+        val, yr = platform_index.latest_value(ind)
+        ms = platform_index.monthly_series(ind)
+        monthly = ("; 월별 " + ", ".join(f"{m}:{v}" for m, v in ms)) if ms else ""
+        lines.append(
+            f"- {ind['name']} [{ind.get('site')}] {ind.get('unit') or ''}"
+            f" | 최근값({yr}): {val}{monthly}")
+    return ("## 사내 데이터플랫폼 조회결과 (⚠️ 내부 데이터 — 대외 공개 검증 안 됨.\n"
+            "담당자 참고용이며, 고객에게 제공하려면 공개 가능 여부를 별도 확인해야 함)\n"
+            + "\n".join(lines))
+
+
 def chat(message, history=None, config=None):
     """질문 1건에 답한다. history: [{'role': 'user'|'assistant', 'content': str}]"""
-    system = _load_prompt() + "\n\n# 참조 데이터\n" + build_context(config)
+    context = build_context(config)
+    plat = platform_context(message)
+    if plat:
+        context += "\n\n" + plat
+    system = _load_prompt() + "\n\n# 참조 데이터\n" + context
     messages = [{"role": "system", "content": system}]
     for turn in (history or [])[-MAX_HISTORY_TURNS:]:
         if turn.get("role") in ("user", "assistant") and turn.get("content"):

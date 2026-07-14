@@ -22,6 +22,8 @@ DEFAULT_MD = os.path.join(BASE_DIR, "data", "factsheet.md")
 
 COLUMNS = ["item_code", "category", "item_name", "year", "site",
            "value", "unit", "source", "public_yn", "note"]
+# 선택 열: 사내 데이터플랫폼 지표고유번호(교차검증 연결용). 있으면 자동 포함.
+OPTIONAL_COLUMNS = ["platform_id"]
 # MD에는 public_yn 열 자체를 싣지 않는다 (Y행만 있으므로 불필요).
 MD_COLUMNS = [c for c in COLUMNS if c != "public_yn"]
 
@@ -45,6 +47,11 @@ def convert(xlsx_path=DEFAULT_XLSX, md_path=DEFAULT_MD):
                 f"{xlsx_path}에 필수 컬럼 '{col}'이 없습니다. "
                 f"현재 헤더: {header}")
         idx[col] = header.index(col)
+    # 선택 열은 있을 때만 반영
+    present_optional = [c for c in OPTIONAL_COLUMNS if c in header]
+    for col in present_optional:
+        idx[col] = header.index(col)
+    out_columns = MD_COLUMNS + present_optional
 
     included, excluded = [], 0
     auto_seq = 0
@@ -57,7 +64,7 @@ def convert(xlsx_path=DEFAULT_XLSX, md_path=DEFAULT_MD):
             excluded += 1
             continue  # C4: 공개 불가 행은 어떤 출력물에도 포함하지 않는다.
         rec = [str(row[idx[c]]).strip() if row[idx[c]] is not None else ""
-               for c in MD_COLUMNS]
+               for c in out_columns]
         # item_code는 선택 입력: 비어 있으면 자동 부여 (매칭·표시용 내부 키)
         code_i = MD_COLUMNS.index("item_code")
         if not rec[code_i]:
@@ -78,17 +85,19 @@ def convert(xlsx_path=DEFAULT_XLSX, md_path=DEFAULT_MD):
         "| " + " | ".join(MD_COLUMNS) + " |",
         "|" + "---|" * len(MD_COLUMNS),
     ]
+    n_md = len(MD_COLUMNS)
     for r in included:
-        cells = [c.replace("|", "\\|").replace("\n", " ") for c in r]
+        # platform_id 등 선택 열은 MD 표에서 제외 (LLM에는 답변 재료만 전달)
+        cells = [c.replace("|", "\\|").replace("\n", " ") for c in r[:n_md]]
         lines.append("| " + " | ".join(cells) + " |")
 
     os.makedirs(os.path.dirname(md_path), exist_ok=True)
     with open(md_path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
-    # 구조화 사본 (Y행만 — C4 동일 적용)
+    # 구조화 사본 (Y행만 — C4 동일 적용). 선택 열 포함(교차검증 연결용).
     json_path = os.path.splitext(md_path)[0] + ".json"
-    records = [dict(zip(MD_COLUMNS, r)) for r in included]
+    records = [dict(zip(out_columns, r)) for r in included]
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump(records, f, ensure_ascii=False, indent=2)
 
