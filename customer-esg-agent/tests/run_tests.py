@@ -86,9 +86,12 @@ class MockLLMHandler(http.server.BaseHTTPRequestHandler):
                 ],
             }, ensure_ascii=False) + "\n```"
         elif "리스크 검토 도우미" in system:  # draft + risk
+            reply = ("안녕하세요. Scope 1 배출량은 1234567 tCO2eq입니다. "
+                     "(출처: 2026 지속가능경영보고서 p.42)")
+            if "[과거 대응 이력" in user:
+                reply = "지난 회신에서 안내드린 바와 같이, " + reply
             content = json.dumps({
-                "reply_draft": "안녕하세요. Scope 1 배출량은 1234567 tCO2eq입니다. "
-                               "(출처: 2026 지속가능경영보고서 p.42)",
+                "reply_draft": reply,
                 "dept_requests": [
                     {"owner_dept": "환경안전팀",
                      "body": "LTIR 데이터를 요청드립니다."},
@@ -365,7 +368,7 @@ class TestHTML(unittest.TestCase):
         self.assertIn("1234567", html_text)          # 보유정보 값
         self.assertIn("보고서 p.42", html_text)       # 보유정보 출처
         self.assertIn("공개 범위 확대 우려", html_text)  # 리스크
-        self.assertIn("④ 답변 리스크 검토", html_text)
+        self.assertIn("⑤ 답변 리스크 검토", html_text)
         # 목록 화면: 전체 요청 표 + 행→상세 연결 + 필터
         self.assertIn("전체 요청 목록", html_text)
         self.assertIn('data-id="m001"', html_text)       # 표 행
@@ -440,7 +443,7 @@ class TestDashboardServer(BaseWithServer):
                 with urllib.request.urlopen(base + "/report") as r:
                     page = r.read().decode("utf-8")
                 self.assertIn("예시고객A", page)
-                self.assertIn("④ 답변 리스크 검토", page)
+                self.assertIn("⑤ 답변 리스크 검토", page)
             finally:
                 web.shutdown()
                 (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR,
@@ -716,6 +719,139 @@ class TestPhaseBCrossValidation(unittest.TestCase):
             finally:
                 platform_index.INDEX_PATH = saved
                 platform_index._CACHE.update(mtime=None, doc=None)
+
+
+class TestHistory(BaseWithServer):
+    """과거 고객대응이력: 인그레스트(별칭 헤더) → 검색 → 분석 연계 → 렌더 → 챗봇."""
+
+    def _make_history_xlsx(self, path):
+        from openpyxl import Workbook
+        wb = Workbook(); ws = wb.active
+        # 표준과 다른 헤더 이름(별칭) 사용 → 자동 인식 검증
+        ws.append(["날짜", "고객", "유형", "양식", "요구사항", "회신내용", "담당", "결과"])
+        ws.append(["2025-08-12", "예시고객A", "데이터제출", "CDP",
+                   "2024년 Scope 1 배출량 제출 요청",
+                   "당사 2024년 Scope 1 배출량은 1100000 tCO2eq입니다.",
+                   "홍길동", "기한 내 제출"])
+        ws.append(["2025-03-02", "예시고객A", "설문응답", "EcoVadis",
+                   "재생에너지 사용 비율 문의",
+                   "재생에너지 비율은 30%이며 2030년 60% 목표입니다.",
+                   "홍길동", ""])
+        ws.append(["2024-11-20", "타사B", "데이터제출", "CDP",
+                   "Scope 1 배출량 및 감축목표 제출",
+                   "B사 전용 조건: 상세 사이트별 데이터 제공.",
+                   "김철수", ""])
+        wb.save(path)
+
+    def _ingest(self, tmp):
+        import importlib.util
+        xlsx = os.path.join(tmp, "hist.xlsx")
+        out = os.path.join(tmp, "history_index.json")
+        self._make_history_xlsx(xlsx)
+        spec = importlib.util.spec_from_file_location(
+            "history_ingest", os.path.join(BASE_DIR, "tools", "history_ingest.py"))
+        ingest = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ingest)
+        n, _ = ingest.convert(xlsx, out)
+        return n, out
+
+    def test_ingest_alias_headers_and_search(self):
+        import history_index
+        with tempfile.TemporaryDirectory() as tmp:
+            n, out = self._ingest(tmp)
+            self.assertEqual(n, 3)
+            # 동일 고객 가중: Scope 1 검색 시 예시고객A 이력이 타사보다 우선
+            hits = history_index.search("Scope 1 배출량 제출",
+                                        customer="예시고객A", index_path=out)
+            self.assertEqual(hits[0]["customer"], "예시고객A")
+            self.assertIn("1100000", hits[0]["answer"])
+            # 최근 이력 조회
+            recent = history_index.recent_for_customer(
+                "예시고객A", index_path=out)
+            self.assertEqual([r["date"] for r in recent],
+                             ["2025-08-12", "2025-03-02"])
+
+    def test_analyzer_links_history_and_draft_uses_it(self):
+        """신규 요청 분석 시 이력 연계 + 초안이 과거 comm 기반으로 작성되는지."""
+        import history_index
+        with tempfile.TemporaryDirectory() as tmp:
+            _, out = self._ingest(tmp)
+            saved_idx = history_index.INDEX_PATH
+            history_index.INDEX_PATH = out
+            history_index._CACHE.update(mtime=None, doc=None)
+
+            inbox = os.path.join(tmp, "inbox")
+            os.makedirs(inbox)
+            data = os.path.join(tmp, "data")
+            os.makedirs(data)
+            xlsx = os.path.join(data, "factsheet.xlsx")
+            md = os.path.join(data, "factsheet.md")
+            make_sample_factsheet.make(xlsx)
+            xlsx_to_md.convert(xlsx, md)
+            mail = {"mail_id": "h001", "entry_id": "E", "store_id": "S",
+                    "received_at": "2026-07-14T09:00:00",
+                    "sender": "buyer@example-a.com", "sender_name": "Buyer",
+                    "subject": "Scope 1 데이터 요청", "attachments": [],
+                    "body": "Scope 1 배출량과 LTIR을 제출 바랍니다."}
+            with open(os.path.join(inbox, "h001.json"), "w",
+                      encoding="utf-8") as f:
+                json.dump(mail, f, ensure_ascii=False)
+
+            saved = (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR,
+                     analyzer.FACTSHEET_MD, analyzer.FACTSHEET_JSON)
+            analyzer.INBOX_DIR = inbox
+            analyzer.ANALYZED_DIR = os.path.join(tmp, "analyzed")
+            analyzer.FACTSHEET_MD = md
+            analyzer.FACTSHEET_JSON = os.path.splitext(md)[0] + ".json"
+            try:
+                r = analyzer.analyze_all(["h001"], CONFIG)[0]
+            finally:
+                (analyzer.INBOX_DIR, analyzer.ANALYZED_DIR,
+                 analyzer.FACTSHEET_MD, analyzer.FACTSHEET_JSON) = saved
+                history_index.INDEX_PATH = saved_idx
+                history_index._CACHE.update(mtime=None, doc=None)
+
+            self.assertEqual(r["status"], "OK")
+            self.assertTrue(r["history_matches"], "이력이 연계돼야 함")
+            custs = {h["customer"] for h in r["history_matches"]}
+            self.assertIn("예시고객A", custs)
+            # 목 LLM은 [과거 대응 이력] 블록을 받으면 연결 표현을 붙인다
+            self.assertIn("지난 회신에서 안내드린 바와 같이", r["reply_draft"])
+
+    def test_dashboard_renders_history_section(self):
+        result = json.loads(json.dumps(TestTracker.RESULT))
+        result["risks"] = []
+        result["reply_draft"] = "초안 본문"
+        result["history_matches"] = [
+            {"date": "2025-08-12", "customer": "예시고객A",
+             "request": "2024년 Scope 1 배출량 제출 요청",
+             "answer": "당사 2024년 Scope 1 배출량은 1100000 tCO2eq입니다.",
+             "note": "기한 내 제출", "related_req": "R1"},
+            {"date": "2024-11-20", "customer": "타사B",
+             "request": "Scope 1 및 감축목표",
+             "answer": "B사 전용 답변.", "note": "", "related_req": None},
+        ]
+        html_text = reporter.build_html([result])
+        self.assertIn("③ 관련 과거 대응 이력", html_text)
+        self.assertIn("동일 고객", html_text)
+        self.assertIn("타 고객 참고", html_text)
+        self.assertIn("당시 발송 답변 보기", html_text)
+        self.assertIn("④ 답변/요청 초안", html_text)  # 번호 재정렬 확인
+
+    def test_chatbot_history_context(self):
+        import chatbot, history_index
+        with tempfile.TemporaryDirectory() as tmp:
+            _, out = self._ingest(tmp)
+            saved = history_index.INDEX_PATH
+            history_index.INDEX_PATH = out
+            history_index._CACHE.update(mtime=None, doc=None)
+            try:
+                block = chatbot.history_context("작년에 예시고객A Scope 1 뭐라고 답했지")
+                self.assertIn("과거 고객 대응 이력", block)
+                self.assertIn("1100000", block)
+            finally:
+                history_index.INDEX_PATH = saved
+                history_index._CACHE.update(mtime=None, doc=None)
 
 
 class TestPlatformConnector(unittest.TestCase):

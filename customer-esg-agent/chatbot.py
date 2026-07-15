@@ -17,6 +17,7 @@ import os
 
 import llm_client
 import platform_index
+import history_index
 
 log = logging.getLogger(__name__)
 
@@ -169,9 +170,28 @@ def platform_context(message, limit=8):
             + "\n".join(lines))
 
 
+def history_context(message, limit=4):
+    """질문과 관련된 과거 고객대응 이력을 검색해 컨텍스트 블록을 만든다."""
+    hits = history_index.search(message, limit=limit)
+    if not hits:
+        return ""
+    lines = []
+    for h in hits:
+        lines.append(
+            f"- [{h.get('date')}] {h.get('customer')} | 요청: "
+            f"{h.get('request', '')[:150]}\n  당시 발송답변: "
+            f"{h.get('answer', '')[:400]}"
+            + (f"\n  결과: {h.get('note')}" if h.get("note") else ""))
+    return ("## 과거 고객 대응 이력 (실제 발송한 답변 기록)\n"
+            + "\n".join(lines))
+
+
 def chat(message, history=None, config=None):
     """질문 1건에 답한다. history: [{'role': 'user'|'assistant', 'content': str}]"""
     context = build_context(config)
+    past = history_context(message)
+    if past:
+        context += "\n\n" + past
     plat = platform_context(message)
     if plat:
         context += "\n\n" + plat

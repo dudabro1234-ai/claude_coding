@@ -20,6 +20,11 @@ data/platform_index.json
 browser_profile/
 platform_nav.json
 
+# 과거 고객대응이력 (고객 커뮤니케이션 원문 — 커밋·외부전송 금지)
+data/history_drop/*
+!data/history_drop/README.txt
+data/history_index.json
+
 # Python
 __pycache__/
 *.pyc

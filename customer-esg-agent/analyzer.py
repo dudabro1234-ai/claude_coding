@@ -16,13 +16,64 @@ import os
 
 import llm_client
 import platform_index
+import history_index
 
 log = logging.getLogger(__name__)
+
+MAX_HISTORY_MATCHES = 6          # 메일 1건당 연계할 과거 이력 상한
+HISTORY_ANSWER_SNIPPET = 800     # 초안 프롬프트에 넣을 과거 답변 최대 길이
 
 
 def platform_available():
     """사내 데이터플랫폼 인덱스가 존재하는지 여부."""
     return platform_index.load().get("count", 0) > 0
+
+
+def find_history_matches(customer, requirements, subject=""):
+    """신규 요구사항과 관련된 과거 대응이력을 찾는다.
+
+    ① 요구사항별 키워드 유사 이력 (동일 고객 가중)
+    ② 동일 고객사의 최근 이력 (키워드와 무관한 최근 커뮤니케이션 맥락)
+    중복 제거 후 최대 MAX_HISTORY_MATCHES건.
+    """
+    if not history_index.available():
+        return []
+    matches, seen = [], set()
+
+    def _add(rec, related_req):
+        key = (rec.get("date"), rec.get("customer"), rec.get("request", "")[:50])
+        if key in seen or len(matches) >= MAX_HISTORY_MATCHES:
+            return
+        seen.add(key)
+        rec = dict(rec)
+        rec["related_req"] = related_req
+        rec.pop("search", None)
+        matches.append(rec)
+
+    for r in requirements:
+        query = f"{r.get('content', '')} {subject}"
+        for rec in history_index.search(query, customer=customer, limit=2):
+            _add(rec, r.get("req_id"))
+    for rec in history_index.recent_for_customer(customer, limit=2):
+        _add(rec, None)
+    return matches
+
+
+def _history_prompt_block(matches):
+    """초안 LLM 호출에 넣을 과거 이력 블록을 만든다 (없으면 빈 문자열)."""
+    if not matches:
+        return ""
+    items = []
+    for h in matches:
+        items.append({
+            "일자": h.get("date"), "고객사": h.get("customer"),
+            "관련_req": h.get("related_req"),
+            "당시_요청": h.get("request", "")[:300],
+            "당시_발송답변": h.get("answer", "")[:HISTORY_ANSWER_SNIPPET],
+            "결과": h.get("note", ""),
+        })
+    return ("\n\n[과거 대응 이력 (실제 발송한 답변 — 초안 작성 시 참고)]\n"
+            + json.dumps(items, ensure_ascii=False, indent=2))
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 INBOX_DIR = os.path.join(BASE_DIR, "work", "inbox")
@@ -254,12 +305,19 @@ def analyze_mail(mail, config, factsheet_md, prompts, factsheet_index=None):
         "reply_draft": None,
         "dept_requests": [],
         "risks": [],
+        "history_matches": [],
     }
+
+    # ── 과거 대응이력 연계 ───────────────────────────────────
+    # 요구사항별 유사 이력 + 동일 고객 최근 이력을 모아 초안 작성의 근거로 쓴다.
+    result["history_matches"] = find_history_matches(customer, requirements,
+                                                     mail.get("subject", ""))
 
     # ── 호출 3: 초안 생성 ────────────────────────────────────
     answerable = [r for r in requirements if r["status"] in ("답변가능", "부분가능")]
     missing = [r for r in requirements if r["status"] == "데이터없음"]
     if answerable or missing:
+        history_block = _history_prompt_block(result["history_matches"])
         draft_user = (
             f"[Factsheet]\n{factsheet_md or '(없음)'}\n\n"
             f"[메일 요약]\n고객사: {customer} / 제목: {mail.get('subject', '')}\n"
@@ -268,6 +326,7 @@ def analyze_mail(mail, config, factsheet_md, prompts, factsheet_index=None):
             f"{json.dumps(answerable, ensure_ascii=False, indent=2)}\n\n"
             f"[데이터 없음 요구사항 (부서요청 대상)]\n"
             f"{json.dumps(missing, ensure_ascii=False, indent=2)}"
+            f"{history_block}"
         )
         drafts = llm_client.call_llm_json([
             {"role": "system", "content": prompts["draft"]},
@@ -345,6 +404,7 @@ def analyze_all(mail_ids, config, progress_cb=None):
                 "reply_draft": None,
                 "dept_requests": [],
                 "risks": [],
+                "history_matches": [],
             }
         out_path = os.path.join(ANALYZED_DIR, f"{mail_id}.json")
         with open(out_path, "w", encoding="utf-8") as f:

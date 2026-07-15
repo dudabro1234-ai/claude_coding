@@ -197,12 +197,43 @@ def _requirement_block(req):
   </div>"""
 
 
+def _history_html(m):
+    """관련 과거 대응 이력 섹션 (실발송 답변 기반)."""
+    matches = m.get("history_matches") or []
+    if not matches or m.get("status") == "ERROR":
+        return ""
+    items = ""
+    for i, h in enumerate(matches):
+        req_tag = (f"<span class='req-id'>{_esc(h['related_req'])}</span>"
+                   if h.get("related_req") else
+                   "<span class='dim'>최근 커뮤니케이션</span>")
+        same = h.get("customer") == m.get("customer")
+        cust_badge = ("<span class='src-badge fs'>동일 고객</span>" if same
+                      else "<span class='src-badge plat'>타 고객 참고</span>")
+        note = (f"<span class='dim'> · {_esc(h['note'])}</span>"
+                if h.get("note") else "")
+        items += f"""
+    <div class="hist">
+      <div class="hist-head">
+        <b>{_esc(h.get('date'))}</b> · {_esc(h.get('customer'))} {cust_badge}
+        {req_tag}{note}
+      </div>
+      <div class="hist-q">Q. {_esc(h.get('request', '')[:160])}</div>
+      <details class="hist-a">
+        <summary>당시 발송 답변 보기</summary>
+        <pre>{_esc(h.get('answer', ''))}</pre>
+      </details>
+    </div>"""
+    return (f"<div class='section'><div class='label'>③ 관련 과거 대응 이력 "
+            f"({len(matches)}건 · 실제 발송 답변)</div>{items}</div>")
+
+
 def _risks_html(m):
     risks = m.get("risks") or []
     if m.get("status") == "ERROR":
         return ""
     if not risks:
-        return ("<div class='section'><div class='label'>④ 답변 리스크 검토</div>"
+        return ("<div class='section'><div class='label'>⑤ 답변 리스크 검토</div>"
                 "<div class='nodata'>식별된 리스크 없음 — 그래도 발송 전 검토는 "
                 "필수입니다.</div></div>")
     items = ""
@@ -217,7 +248,7 @@ def _risks_html(m):
          if rk.get('mitigation') else ""}
       </div>
     </div>"""
-    return (f"<div class='section'><div class='label'>④ 답변 리스크 검토 "
+    return (f"<div class='section'><div class='label'>⑤ 답변 리스크 검토 "
             f"({len(risks)}건)</div>{items}</div>")
 
 
@@ -252,7 +283,7 @@ def _mail_card(m):
             f"부서요청 초안 → {_esc(dr.get('owner_dept', '미지정'))}",
             dr.get("body", ""), f"{m['mail_id']}-dept{i}")
     if drafts_html:
-        drafts_html = ("<div class='section'><div class='label'>③ 답변/요청 초안 "
+        drafts_html = ("<div class='section'><div class='label'>④ 답변/요청 초안 "
                        "(발송 전 반드시 검토)</div>" + drafts_html + "</div>")
 
     outlook_link = ""
@@ -281,6 +312,7 @@ def _mail_card(m):
   {f"<div class='summary'>{_esc(m.get('summary'))}</div>" if m.get('summary') else ""}
   <div class="section"><div class="label">①·② 요구사항 및 보유 정보</div>
     {req_blocks}</div>
+  {_history_html(m)}
   {drafts_html}
   {_risks_html(m)}
 </div>"""
@@ -532,7 +564,21 @@ def build_html(results, run_date=None):
                  color: var(--sub); }}
   .risk-mit {{ color: #065f46; font-size: 12px; margin-top: 3px; }}
 
-  /* ── 우측 문답 사이드바 ── */
+  /* ── 과거 대응 이력 ── */
+  .hist {{ border: 1px solid var(--line); border-left: 3px solid var(--accent2);
+    border-radius: 10px; padding: 10px 14px; margin-bottom: 8px;
+    background: #fcfdfe; }}
+  .hist-head {{ font-size: 12px; color: var(--sub); display: flex; gap: 8px;
+    align-items: center; flex-wrap: wrap; }}
+  .hist-head b {{ color: var(--text); }}
+  .hist-q {{ font-size: 13px; margin: 6px 0 4px; }}
+  .hist-a summary {{ font-size: 12px; color: var(--accent2); cursor: pointer;
+    font-weight: 600; }}
+  .hist-a pre {{ white-space: pre-wrap; font-family: inherit; font-size: 12px;
+    background: #f8fafc; border-radius: 8px; padding: 12px; line-height: 1.7;
+    margin: 6px 0 0; }}
+
+  /* ── 우측 문답 사이드바 (고정 도킹) ── */
   #chat-fab {{ position: fixed; right: 24px; bottom: 24px; z-index: 60;
     width: 56px; height: 56px; border-radius: 50%; border: 0; cursor: pointer;
     font-size: 24px; color: #052e22;
@@ -540,22 +586,25 @@ def build_html(results, run_date=None):
     box-shadow: 0 8px 24px rgba(15,23,42,.28); transition: transform .12s; }}
   #chat-fab:hover {{ transform: scale(1.06); }}
   body.chat-open #chat-fab {{ display: none; }}
-  #chat-panel {{ position: fixed; top: 0; right: 0; width: 400px; height: 100vh;
-    max-width: 92vw; background: var(--card); border-left: 1px solid var(--line);
-    box-shadow: -12px 0 40px rgba(15,23,42,.15); z-index: 55;
+  #chat-panel {{ position: fixed; top: 0; right: 0; width: 380px; height: 100vh;
+    max-width: 94vw; background: var(--card); border-left: 1px solid var(--line);
+    box-shadow: -8px 0 28px rgba(15,23,42,.10); z-index: 55;
     display: flex; flex-direction: column;
     transform: translateX(100%); transition: transform .22s ease; }}
   body.chat-open #chat-panel {{ transform: translateX(0); }}
-  @media (min-width: 1500px) {{
-    body.chat-open main {{ margin-right: 400px; }}
+  @media (min-width: 1200px) {{
+    /* 넓은 화면: 본문·헤더가 사이드바만큼 비켜서 나란히 배치 (겹침 없음) */
+    body.chat-open main {{ margin-right: 380px; }}
+    body.chat-open header {{ padding-right: 404px; }}
   }}
-  .chat-head {{ padding: 14px 18px; border-bottom: 1px solid var(--line);
-    display: flex; align-items: center; gap: 10px; }}
+  .chat-head {{ padding: 16px 18px 13px;
+    background: linear-gradient(120deg, #0f172a, #1e3a5f 60%, #134e4a);
+    color: #e2e8f0; display: flex; align-items: center; gap: 10px; }}
   .chat-head b {{ font-size: 14px; }}
-  .chat-head .chat-sub {{ font-size: 11px; color: var(--sub); }}
+  .chat-head .chat-sub {{ font-size: 11px; color: #94a3b8; }}
   .chat-close {{ margin-left: auto; border: 0; background: none;
-    font-size: 20px; cursor: pointer; color: var(--sub); }}
-  .chat-close:hover {{ color: var(--text); }}
+    font-size: 18px; cursor: pointer; color: #94a3b8; }}
+  .chat-close:hover {{ color: #fff; }}
   #chat-log {{ flex: 1; overflow-y: auto; padding: 14px; }}
   .chat-msg {{ display: flex; margin-bottom: 10px; }}
   .chat-msg.user {{ justify-content: flex-end; }}
@@ -814,6 +863,11 @@ function askChip(btn) {{
   chatSend();
 }}
 function chatSubmit(ev) {{ ev.preventDefault(); chatSend(); return false; }}
+
+// 넓은 화면에서는 사이드바를 기본으로 도킹해 항상 표시
+if (window.matchMedia && window.matchMedia("(min-width: 1200px)").matches) {{
+  toggleChat();
+}}
 
 function chatSend() {{
   if (!chatServed) return;
