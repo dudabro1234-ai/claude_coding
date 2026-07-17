@@ -1,0 +1,27 @@
+{
+  "_comment": "각 항목의 작성 방법은 README.md의 '업무 설정' 절에 상세 설명되어 있습니다. 아래 값은 구조 예시용 플레이스홀더입니다.",
+  "outlook": {
+    "mailbox": "",
+    "folder_path": "받은편지함/ESG요청",
+    "max_mails_per_run": 100,
+    "save_drafts_to_outlook": true
+  },
+  "customers": [
+    { "name": "예시고객A", "domains": ["example-a.com"] },
+    { "name": "예시고객B", "domains": ["example-b.com"] }
+  ],
+  "dept_contacts": {
+    "환경안전팀": "",
+    "인사팀": "",
+    "구매팀": "",
+    "품질팀": ""
+  },
+  "urgency": {
+    "urgent_days": 7,
+    "normal_days": 30
+  },
+  "llm": {
+    "max_body_chars": 12000,
+    "chat_max_context_chars": 24000
+  }
+}

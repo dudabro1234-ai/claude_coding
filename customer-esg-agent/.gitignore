@@ -1,0 +1,30 @@
+# 자격증명 (C5)
+llm_config.json
+
+# 중간/최종 산출물 및 실행 상태
+work/
+output/
+logs/
+
+# 실데이터 factsheet (public_yn=N 대외비 포함 가능 — 커밋 금지)
+data/factsheet.xlsx
+data/factsheet.md
+data/factsheet.json
+
+# 사내 데이터플랫폼 원천값 (대외비 — 커밋·외부전송 금지)
+data/platform_drop/*
+!data/platform_drop/README.txt
+data/platform_index.json
+
+# 브라우저 자동화(Phase C): 로그인 세션 프로필·내부 URL 설정 (커밋 금지)
+browser_profile/
+platform_nav.json
+
+# 과거 고객대응이력 (고객 커뮤니케이션 원문 — 커밋·외부전송 금지)
+data/history_drop/*
+!data/history_drop/README.txt
+data/history_index.json
+
+# Python
+__pycache__/
+*.pyc

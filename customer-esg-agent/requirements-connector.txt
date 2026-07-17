@@ -1,0 +1,6 @@
+# 사내 데이터플랫폼 브라우저 자동화(Phase C)에만 필요한 opt-in 의존성.
+# 코어 agent(수집·분석·리포트·챗봇)는 이 패키지 없이도 동작한다.
+# 설치:
+#   pip install -r requirements-connector.txt
+#   python -m playwright install chromium
+playwright>=1.40
