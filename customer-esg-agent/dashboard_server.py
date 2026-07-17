@@ -22,6 +22,7 @@ sys.path.insert(0, BASE_DIR)
 import chatbot   # noqa: E402
 import pipeline  # noqa: E402
 import reporter  # noqa: E402
+import re_simulator  # noqa: E402
 
 log = logging.getLogger("dashboard")
 
@@ -148,7 +149,8 @@ CONTROL_PAGE = """<!DOCTYPE html>
     <div class="stage" id="stage"></div>
   </div>
   <div class="result" id="result"></div>
-  <a class="chat-link" href="/report" target="_blank">📊 최근 검토 대시보드 열기 — 우측 💬 버튼으로 현황 문답</a>
+  <a class="chat-link" href="/report" target="_blank">📊 최근 검토 대시보드 열기 — 우측 사이드바에서 현황 문답</a>
+  <a class="chat-link" href="/re-sim" target="_blank">⚡ 고객별 RE 할당 시뮬레이션 (목업)</a>
 </div>
 <div class="foot">사내 LLM 전용 · 원본 메일 미변경 · 자동 발송 없음</div>
 <script>
@@ -220,6 +222,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/" or self.path.startswith("/index"):
             self._send(200, CONTROL_PAGE)
+        elif self.path == "/re-sim":
+            self._send(200, re_simulator.PAGE)
         elif self.path == "/chat":
             # 문답 UI는 검토 대시보드 우측 사이드바로 통합되었다.
             self.send_response(302)

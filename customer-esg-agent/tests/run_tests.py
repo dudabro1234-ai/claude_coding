@@ -921,6 +921,41 @@ class TestPlatformConnector(unittest.TestCase):
             self.assertTrue(path.endswith(".xlsx"))
 
 
+class TestRESimulator(unittest.TestCase):
+    """RE 할당 시뮬레이션 목업: 페이지 구성 + 서버 라우트."""
+
+    def test_page_contents(self):
+        import re_simulator
+        page = re_simulator.PAGE
+        for token in ("RE 할당 시뮬레이션", "목업", "MS", "AWS", "Apple",
+                      "Google", "Meta", "NVIDIA", "PPA", "REC", "녹색프리미엄",
+                      "우선순위 순차", "요청량 비례", "시뮬레이션 실행",
+                      "총 요청량", "localStorage"):
+            self.assertIn(token, page)
+        # 오프라인 단일 파일: 외부 리소스 참조 없음
+        self.assertNotIn("http://", page)
+        self.assertNotIn("https://", page)
+        # 파일 생성 동작
+        with tempfile.TemporaryDirectory() as tmp:
+            path = re_simulator.write_page(tmp)
+            self.assertTrue(os.path.exists(path))
+
+    def test_server_route(self):
+        import urllib.request
+        import dashboard_server
+        web = http.server.ThreadingHTTPServer(
+            ("127.0.0.1", 0), dashboard_server.Handler)
+        threading.Thread(target=web.serve_forever, daemon=True).start()
+        try:
+            url = f"http://127.0.0.1:{web.server_address[1]}/re-sim"
+            with urllib.request.urlopen(url) as r:
+                body = r.read().decode("utf-8")
+            self.assertEqual(r.status, 200)
+            self.assertIn("RE 할당 시뮬레이션", body)
+        finally:
+            web.shutdown()
+
+
 class TestHardConstraints(unittest.TestCase):
     """T7/T8: 금지 코드 정적 검사."""
 
